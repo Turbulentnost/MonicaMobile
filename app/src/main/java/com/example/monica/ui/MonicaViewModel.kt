@@ -153,6 +153,15 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         viewModelScope.launch {
+            var wasConnected = false
+            presence.connected.collect { connected ->
+                if (connected && !wasConnected && session.isLoggedIn) {
+                    refreshNotifications()
+                }
+                wasConnected = connected
+            }
+        }
+        viewModelScope.launch {
             presence.chatPreviews.collect { json ->
                 val msg = MonicaApi.parseMessage(json)
                 applyChatPreview(msg)
@@ -298,7 +307,9 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
     fun refreshNotifications() {
         viewModelScope.launch {
             try {
-                _notifications.value = withContext(Dispatchers.IO) { api.listNotifications() }
+                val list = withContext(Dispatchers.IO) { api.listNotifications() }
+                _notifications.value = list
+                _inviteBanner.value = list.firstOrNull { it.isPendingPrivateInvite() }
             } catch (_: Exception) {
             }
         }

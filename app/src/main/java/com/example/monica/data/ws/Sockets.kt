@@ -33,7 +33,9 @@ class PresenceSocket(
 
     private var socket: WebSocket? = null
     private var pingJob: Job? = null
+    private var reconnectJob: Job? = null
     private var retry = 0
+    private var allowReconnect = true
 
     private val _onlineIds = MutableStateFlow<Set<String>>(emptySet())
     val onlineIds: StateFlow<Set<String>> = _onlineIds.asStateFlow()
@@ -52,7 +54,10 @@ class PresenceSocket(
     val connected: StateFlow<Boolean> = _connected.asStateFlow()
 
     fun connect() {
-        disconnect(reconnect = false)
+        allowReconnect = true
+        reconnectJob?.cancel()
+        reconnectJob = null
+        closeSocketOnly()
         val token = session.accessToken ?: return
         val request = Request.Builder()
             .url("${session.wsBaseUrl}/ws/presence/?token=$token")
@@ -106,11 +111,13 @@ class PresenceSocket(
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                if (socket !== webSocket) return
                 _connected.value = false
                 scheduleReconnect()
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                if (socket !== webSocket) return
                 _connected.value = false
                 scheduleReconnect()
             }
@@ -118,23 +125,35 @@ class PresenceSocket(
     }
 
     private fun scheduleReconnect() {
+        if (!allowReconnect) return
         if (session.accessToken.isNullOrBlank()) return
+        if (reconnectJob?.isActive == true) return
         if (retry >= 12) return
         val delayMs = minOf(1000L * (1L shl retry), 10_000L)
         retry += 1
-        scope.launch {
+        reconnectJob = scope.launch {
             delay(delayMs)
-            connect()
+            if (allowReconnect && !session.accessToken.isNullOrBlank()) {
+                connect()
+            }
         }
     }
 
-    fun disconnect(reconnect: Boolean = true) {
+    private fun closeSocketOnly() {
         pingJob?.cancel()
         pingJob = null
-        socket?.close(1000, null)
+        val old = socket
         socket = null
         _connected.value = false
-        if (!reconnect) retry = 99
+        old?.close(1000, null)
+    }
+
+    fun disconnect(reconnect: Boolean = true) {
+        allowReconnect = reconnect
+        reconnectJob?.cancel()
+        reconnectJob = null
+        closeSocketOnly()
+        if (!reconnect) retry = 0
     }
 
     fun isOnline(userId: String?): Boolean {

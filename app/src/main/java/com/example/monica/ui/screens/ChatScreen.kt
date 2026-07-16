@@ -75,11 +75,31 @@ import com.example.monica.ui.util.TimeFormat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-private val VsCodeBg = Color(0xFF1E1E1E)
-private val VsCodeFg = Color(0xFFD4D4D4)
-private val VsCodeMuted = Color(0xFF858585)
-private val VsCodeGreen = Color(0xFF4EC9B0)
-private val VsCodeRed = Color(0xFFF48771)
+private data class CodeChrome(
+    val bg: Color,
+    val fg: Color,
+    val muted: Color,
+    val accent: Color,
+    val error: Color,
+)
+
+private fun codeChrome(darkTheme: Boolean) = if (darkTheme) {
+    CodeChrome(
+        bg = Color(0xFF1E1E1E),
+        fg = Color(0xFFD4D4D4),
+        muted = Color(0xFF858585),
+        accent = Color(0xFF4EC9B0),
+        error = Color(0xFFF48771),
+    )
+} else {
+    CodeChrome(
+        bg = Color(0xFFFFFFFF),
+        fg = Color(0xFF1E1E1E),
+        muted = Color(0xFF6B6B6B),
+        accent = Color(0xFF267F99),
+        error = Color(0xFFA1260D),
+    )
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -98,6 +118,7 @@ fun ChatScreen(
     val outgoingPending by vm.outgoingPending.collectAsStateWithLifecycle()
     val incomingInvites by vm.incomingInvitesByChat.collectAsStateWithLifecycle()
     val loading by vm.loading.collectAsStateWithLifecycle()
+    val darkTheme by vm.darkTheme.collectAsStateWithLifecycle()
     val myId = vm.session.userId
 
     val chat = chats.find { it.id == chatId }
@@ -215,6 +236,7 @@ fun ChatScreen(
                             isOwn = msg.sender?.id == myId,
                             chatId = chatId,
                             vm = vm,
+                            darkTheme = darkTheme,
                         )
                     }
                 }
@@ -238,6 +260,7 @@ fun ChatScreen(
                     code = codeText,
                     onCodeChange = { codeText = it },
                     loading = loading,
+                    darkTheme = darkTheme,
                     onCancel = { codeMode = false },
                     onSend = { sendCode() },
                 )
@@ -295,16 +318,18 @@ private fun CodeComposer(
     code: String,
     onCodeChange: (String) -> Unit,
     loading: Boolean,
+    darkTheme: Boolean,
     onCancel: () -> Unit,
     onSend: () -> Unit,
 ) {
     var langExpanded by remember { mutableStateOf(false) }
     val langLabel = if (language == "javascript") "JavaScript" else "Python"
+    val chrome = remember(darkTheme) { codeChrome(darkTheme) }
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(VsCodeBg)
+            .background(chrome.bg)
             .padding(12.dp),
     ) {
         Row(
@@ -357,13 +382,14 @@ private fun CodeComposer(
         Spacer(Modifier.height(6.dp))
         Text(
             "Двойной пробел — отступ · отправить кнопкой ниже",
-            color = VsCodeMuted,
+            color = chrome.muted,
             style = MaterialTheme.typography.labelSmall,
         )
         Spacer(Modifier.height(6.dp))
         MonacoEditorView(
             value = code,
             language = language,
+            darkTheme = darkTheme,
             onValueChange = onCodeChange,
             onSubmit = onSend,
             modifier = Modifier
@@ -379,7 +405,7 @@ private fun CodeComposer(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             TextButton(onClick = onCancel) {
-                Text("Отмена", color = VsCodeFg)
+                Text("Отмена", color = chrome.fg)
             }
             Spacer(Modifier.width(8.dp))
             Button(
@@ -489,15 +515,17 @@ private fun MessageBubble(
     isOwn: Boolean,
     chatId: String,
     vm: MonicaViewModel,
+    darkTheme: Boolean,
 ) {
     val codeLang = codeLanguageOf(message)
+    val chrome = remember(darkTheme) { codeChrome(darkTheme) }
     val bg = when {
-        codeLang != null -> VsCodeBg
+        codeLang != null -> chrome.bg
         isOwn -> MaterialTheme.colorScheme.primary
         else -> MaterialTheme.colorScheme.surfaceVariant
     }
     val fg = when {
-        codeLang != null -> VsCodeFg
+        codeLang != null -> chrome.fg
         isOwn -> MaterialTheme.colorScheme.onPrimary
         else -> MaterialTheme.colorScheme.onSurface
     }
@@ -539,6 +567,7 @@ private fun MessageBubble(
                         language = codeLang,
                         chatId = chatId,
                         vm = vm,
+                        darkTheme = darkTheme,
                     )
                 }
                 message.messageType == "file" -> {
@@ -565,7 +594,7 @@ private fun MessageBubble(
                     MessageDeliveryStatus(
                         status = delivery,
                         color = when (delivery) {
-                            DeliveryStatus.Read -> if (codeLang != null) VsCodeGreen else fg
+                            DeliveryStatus.Read -> if (codeLang != null) chrome.accent else fg
                             else -> fg.copy(alpha = 0.75f)
                         },
                     )
@@ -623,12 +652,14 @@ private fun CodeMessageBody(
     language: String,
     chatId: String,
     vm: MonicaViewModel,
+    darkTheme: Boolean,
 ) {
     var codeText by remember(message.id) { mutableStateOf<String?>(null) }
     var loadError by remember(message.id) { mutableStateOf<String?>(null) }
     var running by remember(message.id) { mutableStateOf(false) }
     var runResult by remember(message.id) { mutableStateOf<MonicaApi.CodeRunResult?>(null) }
     var runError by remember(message.id) { mutableStateOf<String?>(null) }
+    val chrome = remember(darkTheme) { codeChrome(darkTheme) }
 
     LaunchedEffect(message.id, message.contentUrl, message.content) {
         if (message.contentUrl.isNullOrBlank() && message.content.isBlank()) {
@@ -656,12 +687,12 @@ private fun CodeMessageBody(
         ) {
             Text(
                 label,
-                color = VsCodeFg,
+                color = chrome.fg,
                 fontWeight = FontWeight.Medium,
                 modifier = Modifier.weight(1f),
                 maxLines = 1,
             )
-            Text(langLabel, color = VsCodeGreen, style = MaterialTheme.typography.labelSmall)
+            Text(langLabel, color = chrome.accent, style = MaterialTheme.typography.labelSmall)
             OutlinedButton(
                 onClick = {
                     if (running) return@OutlinedButton
@@ -702,11 +733,12 @@ private fun CodeMessageBody(
         }
         Spacer(Modifier.height(8.dp))
         when {
-            loadError != null -> Text(loadError!!, color = VsCodeRed)
-            codeText == null -> Text("Загрузка…", color = VsCodeMuted)
+            loadError != null -> Text(loadError!!, color = chrome.error)
+            codeText == null -> Text("Загрузка…", color = chrome.muted)
             else -> CodeViewerView(
                 code = codeText!!,
                 language = language,
+                darkTheme = darkTheme,
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(6.dp)),
@@ -714,7 +746,7 @@ private fun CodeMessageBody(
         }
         if (runError != null) {
             Spacer(Modifier.height(8.dp))
-            Text(runError!!, color = VsCodeRed, style = MaterialTheme.typography.bodySmall)
+            Text(runError!!, color = chrome.error, style = MaterialTheme.typography.bodySmall)
         }
         runResult?.let { result ->
             Spacer(Modifier.height(8.dp))
@@ -724,13 +756,13 @@ private fun CodeMessageBody(
                     if (result.timedOut) append(" · timeout")
                     if (result.memoryExceeded) append(" · memory")
                 },
-                color = VsCodeMuted,
+                color = chrome.muted,
                 style = MaterialTheme.typography.labelSmall,
             )
             if (result.stdout.isNotBlank()) {
                 Text(
                     result.stdout,
-                    color = VsCodeFg,
+                    color = chrome.fg,
                     fontFamily = FontFamily.Monospace,
                     style = MaterialTheme.typography.bodySmall,
                 )
@@ -738,7 +770,7 @@ private fun CodeMessageBody(
             if (result.stderr.isNotBlank()) {
                 Text(
                     result.stderr,
-                    color = VsCodeRed,
+                    color = chrome.error,
                     fontFamily = FontFamily.Monospace,
                     style = MaterialTheme.typography.bodySmall,
                 )
@@ -746,3 +778,4 @@ private fun CodeMessageBody(
         }
     }
 }
+

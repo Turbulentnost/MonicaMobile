@@ -1,24 +1,103 @@
 <!DOCTYPE html>
-<html>
+<html data-theme="dark">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-vsc-dark-plus.min.css" />
   <style>
-    html, body { margin: 0; padding: 0; background: #1e1e1e; }
+    /* VS Code Dark+ / Light+ token colors — встроены, чтобы CDN theme CSS не ломал читаемость */
+    :root, [data-theme="dark"] {
+      --code-bg: #1e1e1e;
+      --code-fg: #d4d4d4;
+      --tok-comment: #6a9955;
+      --tok-punct: #d4d4d4;
+      --tok-number: #b5cea8;
+      --tok-string: #ce9178;
+      --tok-keyword: #569cd6;
+      --tok-function: #dcdcaa;
+      --tok-class: #4ec9b0;
+      --tok-operator: #d4d4d4;
+      --tok-builtin: #4ec9b0;
+      --tok-regex: #d16969;
+      --tok-variable: #9cdcfe;
+      --tok-attr: #9cdcfe;
+      --tok-tag: #569cd6;
+    }
+    [data-theme="light"] {
+      --code-bg: #ffffff;
+      --code-fg: #1e1e1e;
+      --tok-comment: #008000;
+      --tok-punct: #1e1e1e;
+      --tok-number: #098658;
+      --tok-string: #a31515;
+      --tok-keyword: #0000ff;
+      --tok-function: #795e26;
+      --tok-class: #267f99;
+      --tok-operator: #1e1e1e;
+      --tok-builtin: #267f99;
+      --tok-regex: #811f3f;
+      --tok-variable: #001080;
+      --tok-attr: #001080;
+      --tok-tag: #800000;
+    }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--code-bg);
+      color: var(--code-fg);
+    }
     pre {
       margin: 0;
       padding: 10px 12px;
-      background: #1e1e1e !important;
-      font-size: 12px;
-      line-height: 1.45;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+      font-size: 12.5px;
+      line-height: 1.5;
       font-family: ui-monospace, Consolas, 'Courier New', monospace;
       white-space: pre-wrap;
       word-break: break-word;
       overflow: auto;
       max-height: 280px;
+      tab-size: 4;
     }
-    code { font-family: inherit; }
+    code, code[class*="language-"], pre[class*="language-"] {
+      font-family: inherit;
+      background: transparent !important;
+      color: var(--code-fg) !important;
+      text-shadow: none !important;
+    }
+    .token.comment,
+    .token.prolog,
+    .token.doctype,
+    .token.cdata { color: var(--tok-comment); font-style: italic; }
+    .token.punctuation { color: var(--tok-punct); }
+    .token.property,
+    .token.tag { color: var(--tok-tag); }
+    .token.boolean,
+    .token.number,
+    .token.constant,
+    .token.symbol { color: var(--tok-number); }
+    .token.selector,
+    .token.attr-name,
+    .token.string,
+    .token.char,
+    .token.inserted { color: var(--tok-string); }
+    .token.builtin { color: var(--tok-builtin); }
+    .token.operator,
+    .token.entity,
+    .token.url { color: var(--tok-operator); }
+    .token.atrule,
+    .token.attr-value,
+    .token.keyword { color: var(--tok-keyword); font-weight: 500; }
+    .token.function { color: var(--tok-function); }
+    .token.class-name { color: var(--tok-class); }
+    .token.regex,
+    .token.important { color: var(--tok-regex); }
+    .token.variable { color: var(--tok-variable); }
+    .token.attr-name { color: var(--tok-attr); }
+    .token.deleted { color: var(--tok-regex); }
+    .token.important,
+    .token.bold { font-weight: 700; }
+    .token.italic { font-style: italic; }
   </style>
 </head>
 <body>
@@ -27,17 +106,36 @@
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-javascript.min.js"></script>
   <script>
-    function setCode(text, lang) {
-      const el = document.getElementById('code');
-      el.className = 'language-' + (lang === 'javascript' ? 'javascript' : 'python');
-      el.textContent = text || '';
-      if (window.Prism) Prism.highlightElement(el);
-      if (window.MonicaBridge && MonicaBridge.onHeight) {
-        const h = Math.min(Math.max(document.body.scrollHeight, 80), 300);
-        MonicaBridge.onHeight(h);
+    (function () {
+      const params = new URLSearchParams(location.search);
+      const initial = params.get('theme') === 'light' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', initial);
+
+      function reportHeight() {
+        if (window.MonicaBridge && MonicaBridge.onHeight) {
+          const h = Math.min(Math.max(document.body.scrollHeight, 80), 300);
+          MonicaBridge.onHeight(h);
+        }
       }
-    }
-    if (window.MonicaBridge && MonicaBridge.onReady) MonicaBridge.onReady();
+
+      window.setTheme = function (mode) {
+        document.documentElement.setAttribute(
+          'data-theme',
+          mode === 'light' ? 'light' : 'dark'
+        );
+        reportHeight();
+      };
+
+      window.setCode = function (text, lang) {
+        const el = document.getElementById('code');
+        el.className = 'language-' + (lang === 'javascript' ? 'javascript' : 'python');
+        el.textContent = text || '';
+        if (window.Prism) Prism.highlightElement(el);
+        reportHeight();
+      };
+
+      if (window.MonicaBridge && MonicaBridge.onReady) MonicaBridge.onReady();
+    })();
   </script>
 </body>
 </html>

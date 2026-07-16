@@ -23,18 +23,24 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import org.json.JSONObject
 
+private const val VS_DARK_BG = "#1E1E1E"
+private const val VS_LIGHT_BG = "#FFFFFF"
+
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun MonacoEditorView(
     value: String,
     language: String,
     modifier: Modifier = Modifier,
+    darkTheme: Boolean = true,
     readOnly: Boolean = false,
     onValueChange: (String) -> Unit = {},
     onSubmit: (() -> Unit)? = null,
 ) {
     var webView by remember { mutableStateOf<WebView?>(null) }
     var ready by remember { mutableStateOf(false) }
+    val themeKey = if (darkTheme) "dark" else "light"
+    val bgColor = if (darkTheme) VS_DARK_BG else VS_LIGHT_BG
 
     DisposableEffect(Unit) {
         onDispose {
@@ -54,6 +60,12 @@ fun MonacoEditorView(
         webView?.evaluateJavascript("setLanguage(${JSONObject.quote(lang)});", null)
     }
 
+    LaunchedEffect(themeKey, ready) {
+        if (!ready) return@LaunchedEffect
+        webView?.setBackgroundColor(Color.parseColor(bgColor))
+        webView?.evaluateJavascript("setTheme(${JSONObject.quote(themeKey)});", null)
+    }
+
     AndroidView(
         modifier = modifier.fillMaxWidth(),
         factory = { context ->
@@ -62,7 +74,7 @@ fun MonacoEditorView(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT,
                 )
-                setBackgroundColor(Color.parseColor("#1E1E1E"))
+                setBackgroundColor(Color.parseColor(bgColor))
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
                 settings.cacheMode = WebSettings.LOAD_DEFAULT
@@ -98,11 +110,15 @@ fun MonacoEditorView(
                 }
                 val lang = if (language == "javascript") "javascript" else "python"
                 val ro = if (readOnly) "1" else "0"
-                loadUrl("file:///android_asset/monaco/editor.html?lang=$lang&readonly=$ro")
+                loadUrl(
+                    "file:///android_asset/monaco/editor.html?lang=$lang&readonly=$ro&theme=$themeKey",
+                )
                 webView = this
             }
         },
-        update = { /* value/language via LaunchedEffect */ },
+        update = { view ->
+            view.setBackgroundColor(Color.parseColor(bgColor))
+        },
     )
 }
 
@@ -112,10 +128,13 @@ fun CodeViewerView(
     code: String,
     language: String,
     modifier: Modifier = Modifier,
+    darkTheme: Boolean = true,
 ) {
     var webView by remember { mutableStateOf<WebView?>(null) }
     var ready by remember { mutableStateOf(false) }
     var heightDp by remember { mutableIntStateOf(160) }
+    val themeKey = if (darkTheme) "dark" else "light"
+    val bgColor = if (darkTheme) VS_DARK_BG else VS_LIGHT_BG
 
     DisposableEffect(Unit) {
         onDispose {
@@ -133,6 +152,12 @@ fun CodeViewerView(
         )
     }
 
+    LaunchedEffect(themeKey, ready) {
+        if (!ready) return@LaunchedEffect
+        webView?.setBackgroundColor(Color.parseColor(bgColor))
+        webView?.evaluateJavascript("setTheme(${JSONObject.quote(themeKey)});", null)
+    }
+
     AndroidView(
         modifier = modifier
             .fillMaxWidth()
@@ -143,7 +168,7 @@ fun CodeViewerView(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT,
                 )
-                setBackgroundColor(Color.parseColor("#1E1E1E"))
+                setBackgroundColor(Color.parseColor(bgColor))
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
                 settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
@@ -167,9 +192,12 @@ fun CodeViewerView(
                         ready = true
                     }
                 }
-                loadUrl("file:///android_asset/monaco/viewer.html")
+                loadUrl("file:///android_asset/monaco/viewer.html?theme=$themeKey")
                 webView = this
             }
+        },
+        update = { view ->
+            view.setBackgroundColor(Color.parseColor(bgColor))
         },
     )
 }
