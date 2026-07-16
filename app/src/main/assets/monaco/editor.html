@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <style>
+    html, body, #container { margin: 0; padding: 0; width: 100%; height: 100%; background: #1e1e1e; overflow: hidden; }
+  </style>
+</head>
+<body>
+  <div id="container"></div>
+  <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/loader.js"></script>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const lang = params.get('lang') || 'python';
+    const readOnly = params.get('readonly') === '1';
+    const tabSize = lang === 'python' ? 4 : 2;
+
+    let editor = null;
+    let lastSpaceAt = 0;
+
+    require.config({
+      paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs' }
+    });
+    require(['vs/editor/editor.main'], function () {
+      editor = monaco.editor.create(document.getElementById('container'), {
+        value: '',
+        language: lang,
+        theme: 'vs-dark',
+        fontSize: 13,
+        fontFamily: "ui-monospace, Consolas, 'Courier New', monospace",
+        lineHeight: 20,
+        minimap: { enabled: false },
+        scrollBeyondLastLine: false,
+        automaticLayout: true,
+        tabSize: tabSize,
+        insertSpaces: true,
+        detectIndentation: false,
+        autoIndent: 'full',
+        wordWrap: 'on',
+        readOnly: readOnly,
+        quickSuggestions: !readOnly,
+        suggestOnTriggerCharacters: !readOnly,
+        acceptSuggestionOnEnter: 'on',
+        tabCompletion: 'on',
+        wordBasedSuggestions: 'currentDocument',
+        snippetSuggestions: 'inline',
+        useTabStops: true,
+        autoClosingBrackets: 'languageDefined',
+        autoClosingQuotes: 'languageDefined',
+        matchBrackets: 'always',
+        bracketPairColorization: { enabled: true },
+        padding: { top: 12, bottom: 12 },
+        scrollbar: { verticalScrollbarSize: 8, horizontalScrollbarSize: 8 },
+        overviewRulerLanes: 0,
+        renderLineHighlight: readOnly ? 'none' : 'line',
+      });
+
+      if (!readOnly) {
+        editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, function () {
+          if (window.MonicaBridge && MonicaBridge.onSubmit) {
+            MonicaBridge.onSubmit(editor.getValue());
+          }
+        });
+
+        // Двойной пробел → отступ (вместо Tab на мобильной клавиатуре)
+        editor.onDidType(function (text) {
+          if (text !== ' ') {
+            lastSpaceAt = 0;
+            return;
+          }
+          const now = Date.now();
+          if (lastSpaceAt > 0 && now - lastSpaceAt < 400) {
+            const model = editor.getModel();
+            const pos = editor.getPosition();
+            if (model && pos && pos.column >= 3) {
+              const range = new monaco.Range(
+                pos.lineNumber, pos.column - 2, pos.lineNumber, pos.column
+              );
+              if (model.getValueInRange(range) === '  ') {
+                const indent = ' '.repeat(model.getOptions().tabSize || tabSize);
+                editor.executeEdits('double-space-indent', [{
+                  range: range,
+                  text: indent,
+                  forceMoveMarkers: true,
+                }]);
+              }
+            }
+            lastSpaceAt = 0;
+          } else {
+            lastSpaceAt = now;
+          }
+        });
+
+        editor.onDidChangeModelContent(function () {
+          if (window.MonicaBridge && MonicaBridge.onChange) {
+            MonicaBridge.onChange(editor.getValue());
+          }
+        });
+      }
+
+      if (window.MonicaBridge && MonicaBridge.onReady) {
+        MonicaBridge.onReady();
+      }
+    });
+
+    function setValue(v) {
+      if (!editor) return;
+      const cur = editor.getValue();
+      if (cur !== v) editor.setValue(v || '');
+    }
+    function getValue() {
+      return editor ? editor.getValue() : '';
+    }
+    function setLanguage(l) {
+      if (!editor) return;
+      monaco.editor.setModelLanguage(editor.getModel(), l);
+      editor.updateOptions({ tabSize: l === 'python' ? 4 : 2 });
+    }
+  </script>
+</body>
+</html>

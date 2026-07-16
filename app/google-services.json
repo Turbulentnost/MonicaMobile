@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "368092358078",
+    "project_id": "monica-74a73",
+    "storage_bucket": "monica-74a73.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:368092358078:android:33e62df521747a6a6cc5ef",
+        "android_client_info": {
+          "package_name": "com.chat.monica"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBIWPct2tc0zUVfgncFb9HspMSLx-2zZbc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

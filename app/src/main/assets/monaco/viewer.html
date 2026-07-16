@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-vsc-dark-plus.min.css" />
+  <style>
+    html, body { margin: 0; padding: 0; background: #1e1e1e; }
+    pre {
+      margin: 0;
+      padding: 10px 12px;
+      background: #1e1e1e !important;
+      font-size: 12px;
+      line-height: 1.45;
+      font-family: ui-monospace, Consolas, 'Courier New', monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+      overflow: auto;
+      max-height: 280px;
+    }
+    code { font-family: inherit; }
+  </style>
+</head>
+<body>
+  <pre><code id="code" class="language-python"></code></pre>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-javascript.min.js"></script>
+  <script>
+    function setCode(text, lang) {
+      const el = document.getElementById('code');
+      el.className = 'language-' + (lang === 'javascript' ? 'javascript' : 'python');
+      el.textContent = text || '';
+      if (window.Prism) Prism.highlightElement(el);
+      if (window.MonicaBridge && MonicaBridge.onHeight) {
+        const h = Math.min(Math.max(document.body.scrollHeight, 80), 300);
+        MonicaBridge.onHeight(h);
+      }
+    }
+    if (window.MonicaBridge && MonicaBridge.onReady) MonicaBridge.onReady();
+  </script>
+</body>
+</html>
