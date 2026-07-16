@@ -16,7 +16,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
@@ -36,9 +35,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.monica.R
 import com.example.monica.data.AppNotification
 import com.example.monica.data.isPendingPrivateInvite
 import com.example.monica.ui.MonicaViewModel
+import com.example.monica.ui.components.AppIcon
 import com.example.monica.ui.components.MonicaAppBar
 import com.example.monica.ui.util.TimeFormat
 
@@ -146,16 +147,16 @@ private fun NotificationRow(
             }
         }
         if (pendingInvite) {
-            FilledIconButton(
+            IconButton(
                 onClick = onAccept,
                 modifier = Modifier.size(40.dp),
-                shape = CircleShape,
-                colors = IconButtonDefaults.filledIconButtonColors(
-                    containerColor = Color(0xFF2E7D32),
-                    contentColor = Color.White,
-                ),
             ) {
-                Icon(Icons.Outlined.Check, contentDescription = "Принять")
+                AppIcon(
+                    resId = R.drawable.ic_check_green,
+                    contentDescription = "Принять",
+                    size = 28.dp,
+                    tint = null,
+                )
             }
             Spacer(Modifier.size(8.dp))
             FilledIconButton(

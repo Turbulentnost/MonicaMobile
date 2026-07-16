@@ -35,6 +35,8 @@ import com.example.monica.ui.screens.ChatScreen
 import com.example.monica.ui.screens.LoginScreen
 import com.example.monica.ui.screens.NotificationsScreen
 import com.example.monica.ui.screens.PrivateChatScreen
+import com.example.monica.ui.screens.ProfileScreen
+import com.example.monica.ui.screens.SettingsScreen
 import com.example.monica.ui.theme.MonicaTheme
 
 class MainActivity : ComponentActivity() {
@@ -170,6 +172,23 @@ private fun MonicaNav(
                 onOpenNotifications = {
                     navController.navigate("notifications")
                 },
+                onOpenProfile = {
+                    navController.navigate("profile")
+                },
+                onOpenSettings = {
+                    navController.navigate("settings")
+                },
+            )
+        }
+        composable("profile") {
+            ProfileScreen(
+                nickname = vm.session.nickname,
+                onBack = { navController.popBackStack() },
+            )
+        }
+        composable("settings") {
+            SettingsScreen(
+                onBack = { navController.popBackStack() },
             )
         }
         composable("notifications") {

@@ -23,16 +23,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.Done
 import androidx.compose.material.icons.outlined.DoneAll
-import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilledIconButton
-import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -63,10 +59,12 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.monica.R
 import com.example.monica.data.DeliveryStatus
 import com.example.monica.data.MessageItem
 import com.example.monica.data.MonicaApi
 import com.example.monica.ui.MonicaViewModel
+import com.example.monica.ui.components.AppIcon
 import com.example.monica.ui.components.CachedMediaImage
 import com.example.monica.ui.components.CodeViewerView
 import com.example.monica.ui.components.MonicaAppBar
@@ -449,15 +447,16 @@ private fun PrivateChatActionButton(
 ) {
     when {
         hasIncomingInvite -> {
-            FilledIconButton(
+            IconButton(
                 onClick = onAccept,
                 modifier = Modifier.size(40.dp),
-                colors = IconButtonDefaults.filledIconButtonColors(
-                    containerColor = Color(0xFF2E7D32),
-                    contentColor = Color.White,
-                ),
             ) {
-                Icon(Icons.Outlined.Check, contentDescription = "Принять приватный чат")
+                AppIcon(
+                    resId = R.drawable.ic_check_green,
+                    contentDescription = "Принять приватный чат",
+                    size = 28.dp,
+                    tint = null,
+                )
             }
         }
         isOutgoingPending -> {
@@ -487,10 +486,11 @@ private fun PrivateChatActionButton(
                 onClick = onReopen,
                 modifier = Modifier.size(40.dp),
             ) {
-                Icon(
-                    Icons.Outlined.Check,
+                AppIcon(
+                    resId = R.drawable.ic_check_green,
                     contentDescription = "Открыть приватный чат",
-                    tint = Color(0xFF2E7D32),
+                    size = 26.dp,
+                    tint = null,
                 )
             }
         }
@@ -499,7 +499,12 @@ private fun PrivateChatActionButton(
                 onClick = onInvite,
                 modifier = Modifier.size(40.dp),
             ) {
-                Icon(Icons.Outlined.Lock, contentDescription = "Пригласить в приватный чат")
+                AppIcon(
+                    resId = R.drawable.ic_private_message,
+                    contentDescription = "Пригласить в приватный чат",
+                    size = 26.dp,
+                    tint = MaterialTheme.colorScheme.onSurface,
+                )
             }
         }
     }
