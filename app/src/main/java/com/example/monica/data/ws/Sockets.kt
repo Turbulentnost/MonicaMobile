@@ -307,6 +307,8 @@ class ChatSocket(
         fileName: String?,
         mimeType: String?,
         fileSize: Long?,
+        waveform: List<Float> = emptyList(),
+        voiceDurationMs: Long? = null,
         clientId: String? = null,
     ): Boolean {
         val ws = socket ?: return false
@@ -318,6 +320,17 @@ class ChatSocket(
             .put("file_name", fileName ?: "")
             .put("mime_type", mimeType ?: "")
         if (fileSize != null) payload.put("file_size", fileSize)
+        if (waveform.isNotEmpty()) {
+            payload.put(
+                "waveform",
+                org.json.JSONArray().also { array ->
+                    waveform.take(128).forEach { array.put(it.toDouble()) }
+                },
+            )
+        }
+        if (voiceDurationMs != null) {
+            payload.put("voice_duration_ms", voiceDurationMs)
+        }
         if (!clientId.isNullOrBlank()) payload.put("client_id", clientId)
         return ws.send(payload.toString())
     }

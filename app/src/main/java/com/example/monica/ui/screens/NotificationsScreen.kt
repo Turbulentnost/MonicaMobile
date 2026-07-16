@@ -154,7 +154,7 @@ private fun NotificationRow(
                 AppIcon(
                     resId = R.drawable.ic_check_green,
                     contentDescription = "Принять",
-                    size = 28.dp,
+                    size = 32.dp,
                     tint = null,
                 )
             }

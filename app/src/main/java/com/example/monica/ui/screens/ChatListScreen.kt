@@ -313,7 +313,7 @@ private fun ChatListHeader(
                         AppIcon(
                             resId = R.drawable.ic_bell,
                             contentDescription = "Уведомления",
-                            size = 24.dp,
+                            size = 32.dp,
                             tint = MaterialTheme.colorScheme.onSurface,
                         )
                     }
@@ -339,6 +339,7 @@ private fun ChatRow(
         hasPrivateInvite -> "Приглашение в приватный чат"
         chat.lastMessage == null -> "Нет сообщений"
         chat.lastMessage.messageType == "photo" -> "Фото"
+        chat.lastMessage.messageType == "voice" -> "Голосовое сообщение"
         chat.lastMessage.messageType == "file" -> {
             val name = chat.lastMessage.fileName.orEmpty()
             when {
@@ -406,7 +407,7 @@ private fun ChatRow(
                     AppIcon(
                         resId = R.drawable.ic_check_green,
                         contentDescription = "Принять приватный чат",
-                        size = 28.dp,
+                        size = 32.dp,
                         tint = null,
                     )
                 }

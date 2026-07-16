@@ -493,6 +493,55 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun sendUploadedFile(
+        chatId: String,
+        fileName: String,
+        bytes: ByteArray,
+        mimeType: String,
+        waveform: List<Float> = emptyList(),
+        voiceDurationMs: Long? = null,
+        onDone: (Boolean) -> Unit = {},
+    ) {
+        viewModelScope.launch {
+            _loading.value = true
+            try {
+                val uploaded = withContext(Dispatchers.IO) {
+                    api.uploadFile(chatId, fileName, bytes, mimeType)
+                }
+                val ok = enqueueOutgoing(
+                    content = uploaded.path,
+                    messageType = uploaded.messageType,
+                    contentUrl = uploaded.contentUrl,
+                    fileName = uploaded.fileName,
+                    mimeType = uploaded.mimeType,
+                    fileSize = uploaded.fileSize,
+                    waveform = waveform,
+                    voiceDurationMs = voiceDurationMs,
+                ) { clientId ->
+                    chatSocket.sendFile(
+                        path = uploaded.path,
+                        messageType = uploaded.messageType,
+                        fileName = uploaded.fileName,
+                        mimeType = uploaded.mimeType,
+                        fileSize = uploaded.fileSize,
+                        waveform = waveform,
+                        voiceDurationMs = voiceDurationMs,
+                        clientId = clientId,
+                    )
+                }
+                if (!ok) {
+                    _error.value = "Файл загружен, но WebSocket отключился"
+                }
+                onDone(ok)
+            } catch (e: Exception) {
+                _error.value = e.message
+                onDone(false)
+            } finally {
+                _loading.value = false
+            }
+        }
+    }
+
     private fun enqueueOutgoing(
         content: String,
         messageType: String,
@@ -500,6 +549,8 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
         fileName: String? = null,
         mimeType: String? = null,
         fileSize: Long? = null,
+        waveform: List<Float> = emptyList(),
+        voiceDurationMs: Long? = null,
         send: (clientId: String) -> Boolean,
     ): Boolean {
         val clientId = UUID.randomUUID().toString()
@@ -517,6 +568,8 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
             fileName = fileName,
             mimeType = mimeType,
             fileSize = fileSize,
+            waveform = waveform,
+            voiceDurationMs = voiceDurationMs,
             sentAt = isoNow(),
             readAt = null,
             clientId = clientId,

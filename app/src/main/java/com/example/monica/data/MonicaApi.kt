@@ -9,14 +9,14 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
-class MonicaApi(private val session: SessionStore) {
+private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+
+class MonicaApi(private val sessionStore: SessionStore) {
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
         .build()
-
-    private val jsonMedia = "application/json; charset=utf-8".toMediaType()
 
     data class LoginResult(
         val access: String,
@@ -30,10 +30,10 @@ class MonicaApi(private val session: SessionStore) {
             .put("email", email)
             .put("password", password)
             .toString()
-            .toRequestBody(jsonMedia)
+            .toRequestBody(JSON_MEDIA_TYPE)
 
         val json = execute(Request.Builder()
-            .url("${session.apiBaseUrl}/api/auth/login/")
+            .url("${sessionStore.apiBaseUrl}/api/auth/login/")
             .post(body)
             .build())
         val tokens = json.getJSONObject("tokens")
@@ -48,46 +48,46 @@ class MonicaApi(private val session: SessionStore) {
 
     fun me(): UserProfile {
         val json = authGet("/api/auth/me/")
-        return parseUser(json)
+        return Companion.parseUser(json)
     }
 
     fun listChats(): List<ChatSummary> {
         val arr = authGetArray("/api/chats/")
-        return (0 until arr.length()).map { parseChat(arr.getJSONObject(it)) }
+        return (0 until arr.length()).map { Companion.parseChat(arr.getJSONObject(it)) }
     }
 
     fun listMessages(chatId: String, limit: Int = 100): List<MessageItem> {
-        val url = "${session.apiBaseUrl}/api/chats/$chatId/messages/".toHttpUrl()
+        val url = "${sessionStore.apiBaseUrl}/api/chats/$chatId/messages/".toHttpUrl()
             .newBuilder()
             .addQueryParameter("limit", limit.coerceIn(1, 200).toString())
             .build()
         val arr = authGetArray(url.toString(), absolute = true)
-        return (0 until arr.length()).map { parseMessage(arr.getJSONObject(it)) }
+        return (0 until arr.length()).map { Companion.parseMessage(arr.getJSONObject(it)) }
     }
 
     fun searchUsers(query: String): List<UserProfile> {
-        val url = "${session.apiBaseUrl}/api/users/search/".toHttpUrl()
+        val url = "${sessionStore.apiBaseUrl}/api/users/search/".toHttpUrl()
             .newBuilder()
             .addQueryParameter("q", query)
             .build()
         val arr = authGetArray(url.toString(), absolute = true)
-        return (0 until arr.length()).map { parseUser(arr.getJSONObject(it)) }
+        return (0 until arr.length()).map { Companion.parseUser(arr.getJSONObject(it)) }
     }
 
     fun startChat(recipientId: String): ChatSummary {
         val body = JSONObject().put("recipient_id", recipientId)
-            .toString().toRequestBody(jsonMedia)
+            .toString().toRequestBody(JSON_MEDIA_TYPE)
         val json = authPost("/api/chats/start/", body)
         return ChatSummary(
             id = json.getString("id"),
-            partner = json.optJSONObject("partner")?.let { parseUser(it) },
+            partner = json.optJSONObject("partner")?.let { Companion.parseUser(it) },
             lastMessage = null,
             updatedAt = null,
         )
     }
 
     fun invitePrivate(chatId: String): PrivateSessionInfo {
-        val json = authPost("/api/chats/$chatId/private/invite/", "{}".toRequestBody(jsonMedia))
+        val json = authPost("/api/chats/$chatId/private/invite/", "{}".toRequestBody(JSON_MEDIA_TYPE))
         return PrivateSessionInfo(
             id = json.getString("id"),
             chatId = json.optString("chat_id").takeIf { it.isNotBlank() } ?: chatId,
@@ -97,7 +97,7 @@ class MonicaApi(private val session: SessionStore) {
     }
 
     fun acceptPrivate(sessionId: String): PrivateSessionInfo {
-        val json = authPost("/api/private/$sessionId/accept/", "{}".toRequestBody(jsonMedia))
+        val json = authPost("/api/private/$sessionId/accept/", "{}".toRequestBody(JSON_MEDIA_TYPE))
         return PrivateSessionInfo(
             id = json.getString("id"),
             chatId = json.optString("chat_id").takeIf { it.isNotBlank() },
@@ -106,16 +106,16 @@ class MonicaApi(private val session: SessionStore) {
     }
 
     fun declinePrivate(sessionId: String) {
-        authPost("/api/private/$sessionId/decline/", "{}".toRequestBody(jsonMedia))
+        authPost("/api/private/$sessionId/decline/", "{}".toRequestBody(JSON_MEDIA_TYPE))
     }
 
     fun closePrivate(sessionId: String) {
-        authPost("/api/private/$sessionId/close/", "{}".toRequestBody(jsonMedia))
+        authPost("/api/private/$sessionId/close/", "{}".toRequestBody(JSON_MEDIA_TYPE))
     }
 
     fun leavePrivate() {
         runCatching {
-            authPost("/api/private/leave/", "{}".toRequestBody(jsonMedia))
+            authPost("/api/private/leave/", "{}".toRequestBody(JSON_MEDIA_TYPE))
         }
     }
 
@@ -136,32 +136,42 @@ class MonicaApi(private val session: SessionStore) {
         val memoryExceeded: Boolean,
     )
 
-    fun uploadCodeFile(chatId: String, fileName: String, content: String, mimeType: String): UploadedFile {
-        val bytes = content.toByteArray(Charsets.UTF_8)
+    fun uploadFile(
+        chatId: String,
+        fileName: String,
+        bytes: ByteArray,
+        mimeType: String,
+    ): UploadedFile {
+        val safeMime = mimeType.ifBlank { "application/octet-stream" }
         val body = okhttp3.MultipartBody.Builder()
             .setType(okhttp3.MultipartBody.FORM)
             .addFormDataPart(
                 "files",
                 fileName,
-                bytes.toRequestBody(mimeType.toMediaType()),
+                bytes.toRequestBody(safeMime.toMediaType()),
             )
             .build()
-        val text = executeRaw(authRequest("/api/chats/$chatId/messages/upload/").post(body).build())
-        val json = org.json.JSONObject(text)
-        val files = json.getJSONArray("files")
-        val item = files.getJSONObject(0)
+        val text = executeRaw(
+            authRequest("/api/chats/$chatId/messages/upload/").post(body).build(),
+        )
+        val item = org.json.JSONObject(text).getJSONArray("files").getJSONObject(0)
         return UploadedFile(
             path = item.getString("path"),
             contentUrl = item.optString("content_url").takeIf { it.isNotBlank() },
             fileName = item.optString("file_name", fileName),
-            mimeType = item.optString("mime_type", mimeType),
+            mimeType = item.optString("mime_type", safeMime),
             fileSize = item.optLong("file_size", bytes.size.toLong()),
             messageType = item.optString("message_type", "file"),
         )
     }
 
+    fun uploadCodeFile(chatId: String, fileName: String, content: String, mimeType: String): UploadedFile {
+        val bytes = content.toByteArray(Charsets.UTF_8)
+        return uploadFile(chatId, fileName, bytes, mimeType)
+    }
+
     fun runCode(chatId: String, messageId: String): CodeRunResult {
-        val json = authPost("/api/chats/$chatId/messages/$messageId/run/", "{}".toRequestBody(jsonMedia))
+        val json = authPost("/api/chats/$chatId/messages/$messageId/run/", "{}".toRequestBody(JSON_MEDIA_TYPE))
         return CodeRunResult(
             stdout = json.optString("stdout"),
             stderr = json.optString("stderr"),
@@ -172,7 +182,7 @@ class MonicaApi(private val session: SessionStore) {
     }
 
     fun fetchUrlText(url: String): String {
-        val resolved = MediaUrls.resolve(session.apiBaseUrl, url) ?: url
+        val resolved = MediaUrls.resolve(sessionStore.apiBaseUrl, url) ?: url
         val request = Request.Builder().url(resolved).get().build()
         client.newCall(request).execute().use { response ->
             val text = response.body?.string().orEmpty()
@@ -186,14 +196,14 @@ class MonicaApi(private val session: SessionStore) {
      * при ошибке — прокси `/api/media/?path=...` через бэкенд.
      */
     fun fetchMediaText(objectPath: String?, contentUrl: String?): String {
-        val proxy = MediaUrls.proxyUrl(session.apiBaseUrl, objectPath)
+        val proxy = MediaUrls.proxyUrl(sessionStore.apiBaseUrl, objectPath)
         if (!proxy.isNullOrBlank()) {
             runCatching {
                 executeRaw(authRequestUrl(proxy).get().build())
             }.getOrNull()?.let { return it }
         }
 
-        val rewritten = MediaUrls.resolve(session.apiBaseUrl, contentUrl)
+        val rewritten = MediaUrls.resolve(sessionStore.apiBaseUrl, contentUrl)
         if (!rewritten.isNullOrBlank()) {
             runCatching { fetchUrlText(rewritten) }.getOrNull()?.let { return it }
         }
@@ -201,14 +211,14 @@ class MonicaApi(private val session: SessionStore) {
     }
 
     fun fetchMediaBytes(objectPath: String?, contentUrl: String?): ByteArray {
-        val proxy = MediaUrls.proxyUrl(session.apiBaseUrl, objectPath)
+        val proxy = MediaUrls.proxyUrl(sessionStore.apiBaseUrl, objectPath)
         if (!proxy.isNullOrBlank()) {
             runCatching {
                 executeBytes(authRequestUrl(proxy).get().build())
             }.getOrNull()?.takeIf { it.isNotEmpty() }?.let { return it }
         }
 
-        val rewritten = MediaUrls.resolve(session.apiBaseUrl, contentUrl)
+        val rewritten = MediaUrls.resolve(sessionStore.apiBaseUrl, contentUrl)
         if (!rewritten.isNullOrBlank()) {
             try {
                 val request = Request.Builder().url(rewritten).get().build()
@@ -227,20 +237,19 @@ class MonicaApi(private val session: SessionStore) {
         executeBytes(
             authRequest("/api/users/$userId/avatar/").get().build(),
         )
-    }
 
 
     fun listNotifications(): List<AppNotification> {
         val arr = authGetArray("/api/notifications/")
-        return (0 until arr.length()).map { parseNotification(arr.getJSONObject(it)) }
+        return (0 until arr.length()).map { Companion.parseNotification(arr.getJSONObject(it)) }
     }
 
     fun markNotificationRead(id: String) {
-        authPost("/api/notifications/$id/read/", "{}".toRequestBody(jsonMedia))
+        authPost("/api/notifications/$id/read/", "{}".toRequestBody(JSON_MEDIA_TYPE))
     }
 
     fun markAllNotificationsRead() {
-        authPost("/api/notifications/read-all/", "{}".toRequestBody(jsonMedia))
+        authPost("/api/notifications/read-all/", "{}".toRequestBody(JSON_MEDIA_TYPE))
     }
 
     fun clearNotifications() {
@@ -252,22 +261,22 @@ class MonicaApi(private val session: SessionStore) {
             .put("token", fcmToken)
             .put("platform", platform)
             .toString()
-            .toRequestBody(jsonMedia)
+            .toRequestBody(JSON_MEDIA_TYPE)
         authPost("/api/devices/", body)
     }
 
     fun refreshAccessToken(): Boolean {
-        val refresh = session.refreshToken ?: return false
+        val refresh = sessionStore.refreshToken ?: return false
         val body = JSONObject().put("refresh", refresh)
-            .toString().toRequestBody(jsonMedia)
+            .toString().toRequestBody(JSON_MEDIA_TYPE)
         return try {
             val json = execute(
                 Request.Builder()
-                    .url("${session.apiBaseUrl}/api/auth/token/refresh/")
+                    .url("${sessionStore.apiBaseUrl}/api/auth/token/refresh/")
                     .post(body)
                     .build(),
             )
-            session.accessToken = json.getString("access")
+            sessionStore.accessToken = json.getString("access")
             true
         } catch (_: Exception) {
             false
@@ -278,7 +287,7 @@ class MonicaApi(private val session: SessionStore) {
         execute(authRequest(path).get().build())
 
     private fun authGetArray(path: String, absolute: Boolean = false): JSONArray {
-        val url = if (absolute) path else "${session.apiBaseUrl}$path"
+        val url = if (absolute) path else "${sessionStore.apiBaseUrl}$path"
         val text = executeRaw(authRequestUrl(url).get().build())
         return JSONArray(text)
     }
@@ -292,10 +301,10 @@ class MonicaApi(private val session: SessionStore) {
     }
 
     private fun authRequest(path: String): Request.Builder =
-        authRequestUrl("${session.apiBaseUrl}$path")
+        authRequestUrl("${sessionStore.apiBaseUrl}$path")
 
     private fun authRequestUrl(url: String): Request.Builder {
-        val access = session.accessToken ?: throw IllegalStateException("Нет access token")
+        val access = sessionStore.accessToken ?: throw IllegalStateException("Нет access token")
         return Request.Builder()
             .url(url)
             .addHeader("Authorization", "Bearer $access")
@@ -309,10 +318,10 @@ class MonicaApi(private val session: SessionStore) {
     private fun executeRaw(request: Request): String {
         client.newCall(request).execute().use { response ->
             val text = response.body?.string().orEmpty()
-            if (response.code == 401 && session.refreshToken != null) {
+            if (response.code == 401 && sessionStore.refreshToken != null) {
                 if (refreshAccessToken()) {
                     val retry = request.newBuilder()
-                        .header("Authorization", "Bearer ${session.accessToken}")
+                        .header("Authorization", "Bearer ${sessionStore.accessToken}")
                         .build()
                     client.newCall(retry).execute().use { retryResp ->
                         val retryText = retryResp.body?.string().orEmpty()
@@ -331,10 +340,10 @@ class MonicaApi(private val session: SessionStore) {
     private fun executeBytes(request: Request): ByteArray {
         client.newCall(request).execute().use { response ->
             val bytes = response.body?.bytes() ?: ByteArray(0)
-            if (response.code == 401 && session.refreshToken != null) {
+            if (response.code == 401 && sessionStore.refreshToken != null) {
                 if (refreshAccessToken()) {
                     val retry = request.newBuilder()
-                        .header("Authorization", "Bearer ${session.accessToken}")
+                        .header("Authorization", "Bearer ${sessionStore.accessToken}")
                         .build()
                     client.newCall(retry).execute().use { retryResp ->
                         val retryBytes = retryResp.body?.bytes() ?: ByteArray(0)
@@ -373,21 +382,37 @@ class MonicaApi(private val session: SessionStore) {
             updatedAt = json.optString("updated_at").takeIf { it.isNotBlank() && it != "null" },
         )
 
-        fun parseMessage(json: JSONObject): MessageItem = MessageItem(
-            id = json.getString("id"),
-            chatId = json.optString("chat").takeIf { it.isNotBlank() },
-            sender = json.optJSONObject("sender")?.let { parseUser(it) },
-            messageType = json.optString("message_type", "text"),
-            content = json.optString("content"),
-            contentUrl = json.optString("content_url").takeIf { it.isNotBlank() },
-            fileName = json.optString("file_name").takeIf { it.isNotBlank() },
-            mimeType = json.optString("mime_type").takeIf { it.isNotBlank() },
-            fileSize = if (json.has("file_size") && !json.isNull("file_size")) json.getLong("file_size") else null,
-            sentAt = json.optString("sent_at"),
-            readAt = json.optString("read_at").takeIf { it.isNotBlank() && it != "null" },
-            clientId = json.optString("client_id").takeIf { it.isNotBlank() && it != "null" },
-            clientStatus = null,
-        )
+        fun parseMessage(json: JSONObject): MessageItem {
+            val waveformJson = json.optJSONArray("waveform")
+            val waveform = if (waveformJson == null) {
+                emptyList()
+            } else {
+                (0 until waveformJson.length()).map {
+                    waveformJson.optDouble(it, 0.0).toFloat().coerceIn(0f, 1f)
+                }
+            }
+            return MessageItem(
+                id = json.getString("id"),
+                chatId = json.optString("chat").takeIf { it.isNotBlank() },
+                sender = json.optJSONObject("sender")?.let { parseUser(it) },
+                messageType = json.optString("message_type", "text"),
+                content = json.optString("content"),
+                contentUrl = json.optString("content_url").takeIf { it.isNotBlank() },
+                fileName = json.optString("file_name").takeIf { it.isNotBlank() },
+                mimeType = json.optString("mime_type").takeIf { it.isNotBlank() },
+                fileSize = if (json.has("file_size") && !json.isNull("file_size")) {
+                    json.getLong("file_size")
+                } else null,
+                waveform = waveform,
+                voiceDurationMs = if (
+                    json.has("voice_duration_ms") && !json.isNull("voice_duration_ms")
+                ) json.getLong("voice_duration_ms") else null,
+                sentAt = json.optString("sent_at"),
+                readAt = json.optString("read_at").takeIf { it.isNotBlank() && it != "null" },
+                clientId = json.optString("client_id").takeIf { it.isNotBlank() && it != "null" },
+                clientStatus = null,
+            )
+        }
 
         fun parseChat(json: JSONObject): ChatSummary = ChatSummary(
             id = json.getString("id"),

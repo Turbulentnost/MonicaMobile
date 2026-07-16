@@ -31,6 +31,8 @@ data class MessageItem(
     val fileName: String? = null,
     val mimeType: String? = null,
     val fileSize: Long? = null,
+    val waveform: List<Float> = emptyList(),
+    val voiceDurationMs: Long? = null,
     val sentAt: String,
     val readAt: String? = null,
     /** Корреляция optimistic → server ack */

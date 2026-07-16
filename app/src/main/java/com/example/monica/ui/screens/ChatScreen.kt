@@ -1,6 +1,20 @@
 package com.example.monica.ui.screens
 
+import android.Manifest
+import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
+import android.provider.OpenableColumns
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,7 +38,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.Done
 import androidx.compose.material.icons.outlined.DoneAll
 import androidx.compose.material.icons.outlined.PlayArrow
@@ -41,12 +54,17 @@ import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -55,9 +73,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.monica.R
 import com.example.monica.data.DeliveryStatus
@@ -70,10 +94,15 @@ import com.example.monica.ui.components.CodeViewerView
 import com.example.monica.ui.components.MonicaAppBar
 import com.example.monica.ui.components.MonacoEditorView
 import com.example.monica.ui.components.UserAvatar
+import com.example.monica.ui.components.VoiceMessagePlayer
+import com.example.monica.ui.components.VoiceRecorderController
+import com.example.monica.ui.components.formatVoiceDuration
 import com.example.monica.ui.util.TimeFormat
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
+import java.io.File
 
 private data class CodeChrome(
     val bg: Color,
@@ -99,6 +128,33 @@ private fun codeChrome(darkTheme: Boolean) = if (darkTheme) {
         accent = Color(0xFF267F99),
         error = Color(0xFFA1260D),
     )
+}
+
+private fun compressWaveform(samples: List<Float>, targetSize: Int): List<Float> {
+    if (samples.isEmpty()) return emptyList()
+    if (samples.size <= targetSize) return samples.map { it.coerceIn(0.05f, 1f) }
+    return List(targetSize) { index ->
+        val start = index * samples.size / targetSize
+        val end = ((index + 1) * samples.size / targetSize).coerceAtMost(samples.size)
+        samples.subList(start, end).maxOrNull()?.coerceIn(0.05f, 1f) ?: 0.05f
+    }
+}
+
+@Suppress("DEPRECATION")
+private fun vibrateVoiceCancellation(context: Context) {
+    val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        context.getSystemService(VibratorManager::class.java)?.defaultVibrator
+    } else {
+        context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+    } ?: return
+    if (!vibrator.hasVibrator()) return
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        vibrator.vibrate(
+            VibrationEffect.createOneShot(90L, VibrationEffect.DEFAULT_AMPLITUDE),
+        )
+    } else {
+        vibrator.vibrate(90L)
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -282,42 +338,353 @@ fun ChatScreen(
                     onSend = { sendCode() },
                 )
             } else {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    IconButton(
-                        onClick = {
-                            codeMode = true
-                            if (codeText.isBlank()) {
-                                codeLanguage = "python"
-                                codeFileName = "script.py"
+                MessageComposer(
+                    text = input,
+                    onTextChange = {
+                        input = it
+                        vm.onComposerChange(it)
+                    },
+                    loading = loading,
+                    onSendText = {
+                        vm.sendMessage(input)
+                        input = ""
+                    },
+                    onOpenCode = {
+                        codeMode = true
+                        if (codeText.isBlank()) {
+                            codeLanguage = "python"
+                            codeFileName = "script.py"
+                        }
+                    },
+                    onSendFile = { name, bytes, mime ->
+                        vm.sendUploadedFile(chatId, name, bytes, mime)
+                    },
+                    onSendVoice = { file, waveform, durationMs ->
+                        val bytes = runCatching { file.readBytes() }.getOrNull()
+                        if (bytes != null) {
+                            vm.sendUploadedFile(
+                                chatId = chatId,
+                                fileName = file.name,
+                                bytes = bytes,
+                                mimeType = "audio/mp4",
+                                waveform = waveform,
+                                voiceDurationMs = durationMs,
+                            ) {
+                                file.delete()
                             }
-                        },
-                    ) {
-                        Icon(Icons.Outlined.Code, contentDescription = "Режим кода")
+                        } else {
+                            file.delete()
+                        }
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MessageComposer(
+    text: String,
+    onTextChange: (String) -> Unit,
+    loading: Boolean,
+    onSendText: () -> Unit,
+    onOpenCode: () -> Unit,
+    onSendFile: (name: String, bytes: ByteArray, mime: String) -> Unit,
+    onSendVoice: (file: File, waveform: List<Float>, durationMs: Long) -> Unit,
+) {
+    val context = LocalContext.current
+    val recorder = remember { VoiceRecorderController(context.applicationContext) }
+    var recording by remember { mutableStateOf(false) }
+    var cancelled by remember { mutableStateOf(false) }
+    var elapsedMs by remember { mutableLongStateOf(0L) }
+    val levels = remember { mutableStateListOf<Float>() }
+    val fullRecordingLevels = remember { mutableListOf<Float>() }
+    val waveformSamples = 28 // 28 × 70 мс ≈ последние 2 секунды
+    var micPermission by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.RECORD_AUDIO,
+            ) == PackageManager.PERMISSION_GRANTED,
+        )
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        micPermission = granted
+    }
+
+    val attachmentLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val resolver = context.contentResolver
+        val name = resolver.query(
+            uri,
+            arrayOf(OpenableColumns.DISPLAY_NAME),
+            null,
+            null,
+            null,
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                cursor.getString(cursor.getColumnIndexOrThrow(OpenableColumns.DISPLAY_NAME))
+            } else null
+        } ?: "attachment-${System.currentTimeMillis()}"
+        val mime = resolver.getType(uri) ?: "application/octet-stream"
+        val bytes = runCatching {
+            resolver.openInputStream(uri)?.use { it.readBytes() }
+        }.getOrNull()
+        if (bytes != null) onSendFile(name, bytes, mime)
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { recorder.release() }
+    }
+
+    LaunchedEffect(recording) {
+        while (recording) {
+            val snapshot = recorder.snapshot(cancelled)
+            elapsedMs = snapshot.elapsedMs
+            if (levels.size >= waveformSamples) levels.removeAt(0)
+            val level = snapshot.amplitude.coerceAtLeast(0.08f)
+            levels.add(level)
+            fullRecordingLevels.add(level)
+            delay(70)
+        }
+    }
+
+    fun startRecording(): Boolean {
+        if (!micPermission) {
+            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            return false
+        }
+        cancelled = false
+        elapsedMs = 0L
+        levels.clear()
+        fullRecordingLevels.clear()
+        repeat(waveformSamples) { levels.add(0.08f) }
+        recording = recorder.start()
+        return recording
+    }
+
+    fun finishRecording(send: Boolean) {
+        val shouldSend = send && !cancelled && elapsedMs >= 350L
+        val duration = elapsedMs
+        val waveform = compressWaveform(fullRecordingLevels, 64)
+        val file = recorder.stop(shouldSend)
+        recording = false
+        if (file != null) onSendVoice(file, waveform, duration)
+        cancelled = false
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 8.dp),
+        horizontalAlignment = Alignment.End,
+    ) {
+        AnimatedVisibility(visible = recording) {
+            Surface(
+                shape = RoundedCornerShape(18.dp),
+                color = if (cancelled) {
+                    MaterialTheme.colorScheme.errorContainer
+                } else {
+                    MaterialTheme.colorScheme.surfaceVariant
+                },
+                tonalElevation = 4.dp,
+                shadowElevation = 3.dp,
+                modifier = Modifier
+                    .fillMaxWidth(0.72f)
+                    .padding(bottom = 6.dp),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    val waveColor = if (cancelled) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.primary
                     }
-                    OutlinedTextField(
-                        value = input,
-                        onValueChange = {
-                            input = it
-                            vm.onComposerChange(it)
-                        },
-                        modifier = Modifier.weight(1f),
-                        placeholder = { Text("Сообщение…") },
-                        maxLines = 4,
+                    Box(
+                        modifier = Modifier
+                            .size(9.dp)
+                            .clip(RoundedCornerShape(99.dp))
+                            .background(
+                                if (cancelled) {
+                                    MaterialTheme.colorScheme.error
+                                } else {
+                                    Color(0xFFE53935)
+                                },
+                            ),
                     )
-                    Spacer(Modifier.width(8.dp))
-                    IconButton(
-                        onClick = {
-                            vm.sendMessage(input)
-                            input = ""
-                        },
-                        enabled = input.isNotBlank(),
+                    Canvas(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(24.dp),
                     ) {
-                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Отправить")
+                        val count = levels.size.coerceAtLeast(1)
+                        val spacing = size.width / count
+                        levels.forEachIndexed { index, level ->
+                            val bar = size.height * level.coerceIn(0.12f, 1f)
+                            drawLine(
+                                color = waveColor,
+                                start = androidx.compose.ui.geometry.Offset(
+                                    index * spacing,
+                                    (size.height - bar) / 2f,
+                                ),
+                                end = androidx.compose.ui.geometry.Offset(
+                                    index * spacing,
+                                    (size.height + bar) / 2f,
+                                ),
+                                strokeWidth = 2.dp.toPx(),
+                            )
+                        }
+                    }
+                    Text(
+                        if (cancelled) "Отпустите — отмена" else formatVoiceDuration(elapsedMs),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (cancelled) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                }
+            }
+        }
+
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(26.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.78f),
+            tonalElevation = 2.dp,
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(
+                    onClick = { attachmentLauncher.launch("*/*") },
+                    enabled = !loading && !recording,
+                    modifier = Modifier.size(44.dp),
+                ) {
+                    AppIcon(
+                        resId = R.drawable.ic_attachment,
+                        contentDescription = "Прикрепить файл",
+                        size = 28.dp,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                TextField(
+                    value = text,
+                    onValueChange = onTextChange,
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp, max = 92.dp),
+                    enabled = !recording,
+                    placeholder = { Text("Сообщение") },
+                    minLines = 1,
+                    maxLines = 3,
+                    shape = RoundedCornerShape(22.dp),
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = Color.Transparent,
+                        unfocusedContainerColor = Color.Transparent,
+                        disabledContainerColor = Color.Transparent,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent,
+                        disabledIndicatorColor = Color.Transparent,
+                    ),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                    keyboardActions = KeyboardActions(
+                        onSend = {
+                            if (text.isNotBlank() && !loading) onSendText()
+                        },
+                    ),
+                )
+
+                IconButton(
+                    onClick = onOpenCode,
+                    enabled = !loading && !recording,
+                    modifier = Modifier.size(44.dp),
+                ) {
+                    AppIcon(
+                        resId = R.drawable.ic_code,
+                        contentDescription = "Написать код",
+                        size = 28.dp,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                if (text.isNotBlank()) {
+                    IconButton(
+                        onClick = onSendText,
+                        enabled = !loading,
+                        modifier = Modifier.size(44.dp),
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.Send,
+                            contentDescription = "Отправить",
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .size(44.dp)
+                            .pointerInput(micPermission, loading) {
+                                val cancelThreshold = 84.dp.toPx()
+                                awaitEachGesture {
+                                    val down = awaitFirstDown(requireUnconsumed = false)
+                                    if (loading || !startRecording()) {
+                                        var pressed = true
+                                        while (pressed) {
+                                            val event = awaitPointerEvent()
+                                            pressed = event.changes.any { it.pressed }
+                                        }
+                                        return@awaitEachGesture
+                                    }
+                                    var vibrated = false
+                                    var pressed = true
+                                    while (pressed) {
+                                        val event = awaitPointerEvent()
+                                        val change = event.changes.firstOrNull()
+                                        if (change != null) {
+                                            val movedLeft =
+                                                down.position.x - change.position.x > cancelThreshold
+                                            if (movedLeft && !cancelled) {
+                                                cancelled = true
+                                                if (!vibrated) {
+                                                    vibrateVoiceCancellation(context)
+                                                    vibrated = true
+                                                }
+                                            } else if (!movedLeft && cancelled) {
+                                                cancelled = false
+                                            }
+                                            change.consume()
+                                        }
+                                        pressed = event.changes.any { it.pressed }
+                                    }
+                                    finishRecording(send = !cancelled)
+                                }
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        AppIcon(
+                            resId = R.drawable.ic_mic,
+                            contentDescription = "Удерживайте для записи",
+                            size = 28.dp,
+                            tint = if (recording) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
                     }
                 }
             }
@@ -454,7 +821,7 @@ private fun PrivateChatActionButton(
                 AppIcon(
                     resId = R.drawable.ic_check_green,
                     contentDescription = "Принять приватный чат",
-                    size = 28.dp,
+                    size = 32.dp,
                     tint = null,
                 )
             }
@@ -489,7 +856,7 @@ private fun PrivateChatActionButton(
                 AppIcon(
                     resId = R.drawable.ic_check_green,
                     contentDescription = "Открыть приватный чат",
-                    size = 26.dp,
+                    size = 32.dp,
                     tint = null,
                 )
             }
@@ -502,7 +869,7 @@ private fun PrivateChatActionButton(
                 AppIcon(
                     resId = R.drawable.ic_private_message,
                     contentDescription = "Пригласить в приватный чат",
-                    size = 26.dp,
+                    size = 32.dp,
                     tint = MaterialTheme.colorScheme.onSurface,
                 )
             }
@@ -603,6 +970,20 @@ private fun MessageBubble(
                         vm = vm,
                         darkTheme = darkTheme,
                     )
+                }
+                message.messageType == "voice" -> {
+                    val voiceUrl = message.contentUrl
+                    if (!voiceUrl.isNullOrBlank()) {
+                        VoiceMessagePlayer(
+                            url = voiceUrl,
+                            waveform = message.waveform,
+                            recordedDurationMs = message.voiceDurationMs,
+                            foreground = fg,
+                            modifier = Modifier.widthIn(min = 220.dp, max = 290.dp),
+                        )
+                    } else {
+                        Text("Голосовое сообщение", color = fg)
+                    }
                 }
                 message.messageType == "file" -> {
                     Text(
