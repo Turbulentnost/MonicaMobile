@@ -37,13 +37,24 @@ class MonicaFirebaseMessagingService : FirebaseMessagingService() {
             ?: message.data["body"]
             ?: "Новое сообщение"
 
-        val intent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            message.data["chat_id"]?.let { putExtra("chat_id", it) }
+        val chatId = message.data["chat_id"].orEmpty().ifBlank {
+            message.data["chatId"].orEmpty()
         }
+
+        val intent = Intent(this, MainActivity::class.java).apply {
+            action = Intent.ACTION_VIEW
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP
+            if (chatId.isNotBlank()) {
+                putExtra(MainActivity.EXTRA_CHAT_ID, chatId)
+                putExtra("chat_id", chatId)
+            }
+        }
+        val requestCode = if (chatId.isNotBlank()) chatId.hashCode() else 0
         val pending = PendingIntent.getActivity(
             this,
-            0,
+            requestCode,
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
@@ -58,7 +69,7 @@ class MonicaFirebaseMessagingService : FirebaseMessagingService() {
             .build()
 
         NotificationManagerCompat.from(this).notify(
-            (message.messageId ?: System.currentTimeMillis().toString()).hashCode(),
+            (message.messageId ?: "${chatId}:${System.currentTimeMillis()}").hashCode(),
             notification,
         )
     }

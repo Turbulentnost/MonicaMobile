@@ -1,5 +1,6 @@
 package com.example.monica.ui.screens
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -7,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -18,15 +20,16 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.monica.ui.MonicaViewModel
+import com.example.monica.ui.components.MonicaAppBar
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -51,18 +54,25 @@ fun PrivateChatScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
+            MonicaAppBar(
                 navigationIcon = {
-                    IconButton(onClick = {
-                        vm.closePrivate()
-                        onClose()
-                    }) {
+                    IconButton(
+                        onClick = {
+                            vm.closePrivate()
+                            onClose()
+                        },
+                        modifier = Modifier.size(40.dp),
+                    ) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")
                     }
                 },
                 title = {
-                    Column {
-                        Text("Приватный чат", fontWeight = FontWeight.SemiBold)
+                    Column(verticalArrangement = Arrangement.Center) {
+                        Text(
+                            "Приватный чат",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
                         Text(
                             if (connected) "в реальном времени · @${partnerNickname ?: "—"}"
                             else "подключение… · @${partnerNickname ?: "—"}",
@@ -87,6 +97,7 @@ fun PrivateChatScreen(
                 .fillMaxSize()
                 .padding(padding)
                 .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text("Вы пишете", style = MaterialTheme.typography.labelLarge)
             Spacer(Modifier.height(6.dp))

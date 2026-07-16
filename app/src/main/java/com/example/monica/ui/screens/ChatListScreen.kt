@@ -36,7 +36,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -53,6 +52,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.monica.data.AppNotification
 import com.example.monica.data.ChatSummary
 import com.example.monica.ui.MonicaViewModel
+import com.example.monica.ui.components.MonicaAppBar
 import com.example.monica.ui.components.NeonInviteBorder
 import com.example.monica.ui.components.UserAvatar
 import com.example.monica.ui.util.TimeFormat
@@ -88,23 +88,43 @@ fun ChatListScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("Monica") },
+            MonicaAppBar(
+                centerTitle = true,
+                title = {
+                    Text(
+                        "Monica",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                },
                 actions = {
-                    IconButton(onClick = onOpenNotifications) {
+                    IconButton(
+                        onClick = onOpenNotifications,
+                        modifier = Modifier.size(40.dp),
+                    ) {
                         BadgedBox(badge = {
-                            if (unread > 0) Badge { Text("${minOf(unread, 9)}${if (unread > 9) "+" else ""}") }
+                            if (unread > 0) {
+                                Badge {
+                                    Text("${minOf(unread, 9)}${if (unread > 9) "+" else ""}")
+                                }
+                            }
                         }) {
                             Icon(Icons.Outlined.Notifications, contentDescription = "Уведомления")
                         }
                     }
-                    IconButton(onClick = { vm.toggleTheme() }) {
+                    IconButton(
+                        onClick = { vm.toggleTheme() },
+                        modifier = Modifier.size(40.dp),
+                    ) {
                         Icon(
                             if (darkTheme) Icons.Outlined.LightMode else Icons.Outlined.DarkMode,
                             contentDescription = "Тема",
                         )
                     }
-                    IconButton(onClick = { vm.logout() }) {
+                    IconButton(
+                        onClick = { vm.logout() },
+                        modifier = Modifier.size(40.dp),
+                    ) {
                         Icon(Icons.Outlined.Logout, contentDescription = "Выйти")
                     }
                 },
@@ -116,6 +136,7 @@ fun ChatListScreen(
                 .fillMaxSize()
                 .padding(padding)
                 .padding(horizontal = 16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             inviteBanner?.let { banner ->
                 InviteBanner(
@@ -175,7 +196,7 @@ fun ChatListScreen(
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(bottom = 24.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 items(chats, key = { it.id }) { chat ->
                     val hasInvite = incomingInvites.containsKey(chat.id)
@@ -225,12 +246,15 @@ private fun ChatRow(
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable(onClick = onClick)
-                .padding(horizontal = 10.dp, vertical = 10.dp),
+                .padding(horizontal = 10.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            UserAvatar(chat.partner, size = 48.dp, showOnline = true, isOnline = isOnline)
+            UserAvatar(chat.partner, size = 42.dp, showOnline = true, isOnline = isOnline)
             Spacer(Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.Center,
+            ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         text = "@${chat.partner?.nickname ?: "—"}",

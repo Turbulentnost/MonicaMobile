@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="32"
+     height="32"
+     viewBox="0 0 32 32"
+     fill="none"
+     role="img"
+     aria-labelledby="title desc">
+  <title id="title">Анимированная иконка главного меню</title>
+  <desc id="desc">Четыре контурных блока; верхний правый плавно наклоняется по часовой стрелке вокруг своего центра.</desc>
+
+  <style>
+    .tile {
+      fill: none;
+      stroke: #747474;
+      stroke-width: 2.5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .tilting-tile {
+      transform-box: fill-box;
+      transform-origin: center;
+      animation: tilt-clockwise 1.6s cubic-bezier(.45, 0, .55, 1) infinite;
+    }
+
+    @keyframes tilt-clockwise {
+      0%, 18%, 100% { transform: rotate(0deg); }
+      50%, 68%      { transform: rotate(12deg); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .tilting-tile { animation: none; }
+    }
+  </style>
+
+  <rect class="tile" x="1.5"  y="1.5"  width="12" height="12" rx="1.8"/>
+  <rect class="tile tilting-tile" x="18.5" y="1.5" width="12" height="12" rx="1.8"/>
+  <rect class="tile" x="1.5"  y="18.5" width="12" height="12" rx="1.8"/>
+  <rect class="tile" x="18.5" y="18.5" width="12" height="12" rx="1.8"/>
+</svg>

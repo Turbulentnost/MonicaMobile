@@ -56,8 +56,12 @@ class MonicaApi(private val session: SessionStore) {
         return (0 until arr.length()).map { parseChat(arr.getJSONObject(it)) }
     }
 
-    fun listMessages(chatId: String): List<MessageItem> {
-        val arr = authGetArray("/api/chats/$chatId/messages/")
+    fun listMessages(chatId: String, limit: Int = 100): List<MessageItem> {
+        val url = "${session.apiBaseUrl}/api/chats/$chatId/messages/".toHttpUrl()
+            .newBuilder()
+            .addQueryParameter("limit", limit.coerceIn(1, 200).toString())
+            .build()
+        val arr = authGetArray(url.toString(), absolute = true)
         return (0 until arr.length()).map { parseMessage(arr.getJSONObject(it)) }
     }
 

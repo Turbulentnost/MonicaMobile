@@ -83,6 +83,14 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
     private val _privateNav = MutableStateFlow<PrivateNavTarget?>(null)
     val privateNav: StateFlow<PrivateNavTarget?> = _privateNav.asStateFlow()
 
+    /** Открыть обычный чат из push / deep link */
+    private val _pendingChatNav = MutableStateFlow<String?>(null)
+    val pendingChatNav: StateFlow<String?> = _pendingChatNav.asStateFlow()
+
+    /** Триггер прокрутки вниз после открытия из уведомления */
+    private val _scrollChatToBottom = MutableStateFlow(0L)
+    val scrollChatToBottom: StateFlow<Long> = _scrollChatToBottom.asStateFlow()
+
     private val _myPrivateText = MutableStateFlow("")
     val myPrivateText: StateFlow<String> = _myPrivateText.asStateFlow()
 
@@ -114,6 +122,7 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
     private var currentChatId: String? = null
     private var typingJob: Job? = null
     private var privateSyncJob: Job? = null
+    private var openChatJob: Job? = null
 
     init {
         if (session.isLoggedIn) {
@@ -170,6 +179,9 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             chatSocket.messages.collect { json ->
                 val msg = MonicaApi.parseMessage(json)
+                val openId = currentChatId
+                if (openId.isNullOrBlank()) return@collect
+                if (!msg.chatId.isNullOrBlank() && msg.chatId != openId) return@collect
                 _messages.update { list ->
                     val withoutTemp = if (!msg.clientId.isNullOrBlank()) {
                         list.filterNot {
@@ -209,6 +221,16 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch {
             privateSocket.closed.collect { closePrivateLocal() }
+        }
+        viewModelScope.launch {
+            var wasConnected = false
+            chatSocket.connected.collect { connected ->
+                val chatId = currentChatId
+                if (connected && !wasConnected && !chatId.isNullOrBlank()) {
+                    refreshOpenChatMessages(chatId)
+                }
+                wasConnected = connected
+            }
         }
     }
 
@@ -347,30 +369,66 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun openChat(chatId: String) {
+        openChatJob?.cancel()
         currentChatId = chatId
         _partnerTyping.value = false
         _messages.value = emptyList()
         chatSocket.connect(chatId)
-        viewModelScope.launch {
-            try {
-                val msgs = withContext(Dispatchers.IO) { api.listMessages(chatId) }
-                _messages.value = msgs
-                withContext(Dispatchers.IO) {
-                    msgs.mapNotNull { it.sender }.distinctBy { it.id }.forEach { sender ->
-                        AvatarCache.warm(getApplication(), session, sender)
-                    }
+        openChatJob = viewModelScope.launch {
+            refreshOpenChatMessages(chatId)
+        }
+    }
+
+    private suspend fun refreshOpenChatMessages(chatId: String) {
+        try {
+            val msgs = withContext(Dispatchers.IO) { api.listMessages(chatId) }
+            if (currentChatId != chatId) return
+            _messages.update { live ->
+                mergeMessages(msgs, live.filter {
+                    it.chatId.isNullOrBlank() || it.chatId == chatId
+                })
+            }
+            withContext(Dispatchers.IO) {
+                msgs.mapNotNull { it.sender }.distinctBy { it.id }.forEach { sender ->
+                    AvatarCache.warm(getApplication(), session, sender)
                 }
-            } catch (e: Exception) {
+            }
+        } catch (e: Exception) {
+            if (currentChatId == chatId) {
                 _error.value = e.message
             }
         }
     }
 
     fun leaveChat() {
+        openChatJob?.cancel()
+        openChatJob = null
         chatSocket.disconnect()
         currentChatId = null
         _messages.value = emptyList()
         _partnerTyping.value = false
+    }
+
+    /** REST-снимок + live/optimistic сообщения, без потери новых за время загрузки. */
+    private fun mergeMessages(
+        fromApi: List<MessageItem>,
+        live: List<MessageItem>,
+    ): List<MessageItem> {
+        if (live.isEmpty()) return fromApi
+        val merged = LinkedHashMap<String, MessageItem>()
+        fromApi.forEach { merged[it.id] = it }
+        live.forEach { msg ->
+            val existing = merged[msg.id]
+            when {
+                existing == null -> merged[msg.id] = msg
+                !msg.readAt.isNullOrBlank() && existing.readAt.isNullOrBlank() -> {
+                    merged[msg.id] = existing.copy(readAt = msg.readAt, clientStatus = null)
+                }
+            }
+        }
+        return merged.values.sortedWith(
+            compareBy<MessageItem> { it.sentAt.ifBlank { "" } }.thenBy { it.id },
+        )
     }
 
     fun sendMessage(text: String) {
@@ -583,6 +641,17 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
 
     fun consumePrivateNav() {
         _privateNav.value = null
+    }
+
+    fun openChatFromNotification(chatId: String?) {
+        val id = chatId?.trim()?.takeIf { it.isNotBlank() } ?: return
+        _pendingChatNav.value = id
+        _scrollChatToBottom.value = System.currentTimeMillis()
+        refreshChats()
+    }
+
+    fun consumePendingChatNav() {
+        _pendingChatNav.value = null
     }
 
     fun reopenPrivate() {

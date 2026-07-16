@@ -1,6 +1,7 @@
 package com.example.monica
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -41,6 +42,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        handleNotificationIntent(intent)
         enableEdgeToEdge()
         setContent {
             val darkTheme by vm.darkTheme.collectAsStateWithLifecycle()
@@ -66,6 +68,29 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleNotificationIntent(intent)
+    }
+
+    private fun handleNotificationIntent(intent: Intent?) {
+        if (intent == null) return
+        val chatId = intent.getStringExtra(EXTRA_CHAT_ID)
+            ?.takeIf { it.isNotBlank() }
+            ?: intent.getStringExtra("chat_id")?.takeIf { it.isNotBlank() }
+        if (!chatId.isNullOrBlank()) {
+            vm.openChatFromNotification(chatId)
+            // чтобы повторный onCreate с тем же intent не открывал чат снова
+            intent.removeExtra(EXTRA_CHAT_ID)
+            intent.removeExtra("chat_id")
+        }
+    }
+
+    companion object {
+        const val EXTRA_CHAT_ID = "monica.extra.CHAT_ID"
+    }
 }
 
 @Composable
@@ -75,6 +100,7 @@ private fun MonicaNav(
 ) {
     val loggedIn by vm.loggedIn.collectAsStateWithLifecycle()
     val privateNav by vm.privateNav.collectAsStateWithLifecycle()
+    val pendingChatNav by vm.pendingChatNav.collectAsStateWithLifecycle()
     val navController = rememberNavController()
 
     NotificationPermissionEffect()
@@ -91,6 +117,21 @@ private fun MonicaNav(
                 popUpTo(0) { inclusive = true }
             }
         }
+    }
+
+    LaunchedEffect(pendingChatNav, loggedIn) {
+        val chatId = pendingChatNav ?: return@LaunchedEffect
+        if (!loggedIn) return@LaunchedEffect
+        val route = "chat/$chatId"
+        val current = navController.currentDestination?.route
+        if (current != route) {
+            navController.navigate(route) {
+                // список чатов остаётся под чатом
+                launchSingleTop = true
+                restoreState = true
+            }
+        }
+        vm.consumePendingChatNav()
     }
 
     LaunchedEffect(privateNav) {

@@ -47,7 +47,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -55,6 +54,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -69,10 +69,12 @@ import com.example.monica.data.MonicaApi
 import com.example.monica.ui.MonicaViewModel
 import com.example.monica.ui.components.CachedMediaImage
 import com.example.monica.ui.components.CodeViewerView
+import com.example.monica.ui.components.MonicaAppBar
 import com.example.monica.ui.components.MonacoEditorView
 import com.example.monica.ui.components.UserAvatar
 import com.example.monica.ui.util.TimeFormat
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 
 private data class CodeChrome(
@@ -136,16 +138,21 @@ fun ChatScreen(
     var codeFileName by remember { mutableStateOf("script.py") }
     var codeText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
+    val scrollToBottomTick by vm.scrollChatToBottom.collectAsStateWithLifecycle()
 
     DisposableEffect(chatId) {
         vm.openChat(chatId)
         onDispose { vm.leaveChat() }
     }
 
-    LaunchedEffect(messages.size) {
+    LaunchedEffect(chatId, messages.lastOrNull()?.id, scrollToBottomTick) {
+        if (messages.isEmpty()) return@LaunchedEffect
+        // ждём, пока LazyColumn отрисует day-группы + сообщения
+        snapshotFlow { listState.layoutInfo.totalItemsCount }
+            .first { it > 0 }
         val lastIndex = listState.layoutInfo.totalItemsCount - 1
         if (lastIndex >= 0) {
-            listState.animateScrollToItem(lastIndex)
+            listState.scrollToItem(lastIndex)
         }
     }
 
@@ -176,22 +183,33 @@ fun ChatScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
+            MonicaAppBar(
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    IconButton(
+                        onClick = onBack,
+                        modifier = Modifier.size(40.dp),
+                    ) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")
                     }
                 },
                 title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        UserAvatar(partner, size = 36.dp, showOnline = true, isOnline = isOnline)
-                        Spacer(Modifier.width(10.dp))
-                        Column {
-                            Text("@${partner?.nickname ?: "—"}", fontWeight = FontWeight.SemiBold)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        UserAvatar(partner, size = 30.dp, showOnline = true, isOnline = isOnline)
+                        Column(verticalArrangement = Arrangement.Center) {
+                            Text(
+                                "@${partner?.nickname ?: "—"}",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                            )
                             Text(
                                 statusText,
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
                             )
                         }
                     }
@@ -215,6 +233,7 @@ fun ChatScreen(
                 .fillMaxSize()
                 .padding(padding)
                 .imePadding(),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             LazyColumn(
                 modifier = Modifier
@@ -432,6 +451,7 @@ private fun PrivateChatActionButton(
         hasIncomingInvite -> {
             FilledIconButton(
                 onClick = onAccept,
+                modifier = Modifier.size(40.dp),
                 colors = IconButtonDefaults.filledIconButtonColors(
                     containerColor = Color(0xFF2E7D32),
                     contentColor = Color.White,
@@ -442,15 +462,18 @@ private fun PrivateChatActionButton(
         }
         isOutgoingPending -> {
             Box(
-                modifier = Modifier.size(48.dp),
+                modifier = Modifier.size(40.dp),
                 contentAlignment = Alignment.Center,
             ) {
                 CircularProgressIndicator(
-                    modifier = Modifier.size(36.dp),
-                    strokeWidth = 2.5.dp,
+                    modifier = Modifier.size(28.dp),
+                    strokeWidth = 2.dp,
                     color = MaterialTheme.colorScheme.primary,
                 )
-                IconButton(onClick = onCancelOutgoing) {
+                IconButton(
+                    onClick = onCancelOutgoing,
+                    modifier = Modifier.size(40.dp),
+                ) {
                     Icon(
                         Icons.Outlined.Close,
                         contentDescription = "Отменить приглашение",
@@ -460,7 +483,10 @@ private fun PrivateChatActionButton(
             }
         }
         isActive -> {
-            IconButton(onClick = onReopen) {
+            IconButton(
+                onClick = onReopen,
+                modifier = Modifier.size(40.dp),
+            ) {
                 Icon(
                     Icons.Outlined.Check,
                     contentDescription = "Открыть приватный чат",
@@ -469,7 +495,10 @@ private fun PrivateChatActionButton(
             }
         }
         else -> {
-            IconButton(onClick = onInvite) {
+            IconButton(
+                onClick = onInvite,
+                modifier = Modifier.size(40.dp),
+            ) {
                 Icon(Icons.Outlined.Lock, contentDescription = "Пригласить в приватный чат")
             }
         }

@@ -172,6 +172,9 @@ class ChatSocket(
 
     private var socket: WebSocket? = null
     private var chatId: String? = null
+    private var reconnectJob: Job? = null
+    private var retry = 0
+    private var allowReconnect = true
 
     private val _messages = MutableSharedFlow<org.json.JSONObject>(extraBufferCapacity = 32)
     val messages: SharedFlow<org.json.JSONObject> = _messages.asSharedFlow()
@@ -195,8 +198,11 @@ class ChatSocket(
     val connected: StateFlow<Boolean> = _connected.asStateFlow()
 
     fun connect(chatId: String) {
-        disconnect()
+        allowReconnect = true
+        reconnectJob?.cancel()
+        reconnectJob = null
         this.chatId = chatId
+        closeSocketOnly()
         val token = session.accessToken ?: return
         val request = Request.Builder()
             .url("${session.wsBaseUrl}/ws/chat/$chatId/?token=$token")
@@ -204,6 +210,7 @@ class ChatSocket(
         socket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 _connected.value = true
+                retry = 0
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -247,13 +254,40 @@ class ChatSocket(
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                if (socket !== webSocket) return
                 _connected.value = false
+                scheduleReconnect()
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                if (socket !== webSocket) return
                 _connected.value = false
+                scheduleReconnect()
             }
         })
+    }
+
+    private fun scheduleReconnect() {
+        if (!allowReconnect) return
+        val id = chatId ?: return
+        if (session.accessToken.isNullOrBlank()) return
+        if (reconnectJob?.isActive == true) return
+        if (retry >= 12) return
+        val delayMs = minOf(1000L * (1L shl retry), 10_000L)
+        retry += 1
+        reconnectJob = scope.launch {
+            delay(delayMs)
+            if (allowReconnect && chatId == id && !session.accessToken.isNullOrBlank()) {
+                connect(id)
+            }
+        }
+    }
+
+    private fun closeSocketOnly() {
+        val old = socket
+        socket = null
+        _connected.value = false
+        old?.close(1000, null)
     }
 
     fun sendText(content: String, clientId: String? = null): Boolean {
@@ -309,10 +343,12 @@ class ChatSocket(
     }
 
     fun disconnect() {
-        socket?.close(1000, null)
-        socket = null
+        allowReconnect = false
+        reconnectJob?.cancel()
+        reconnectJob = null
+        retry = 0
         chatId = null
-        _connected.value = false
+        closeSocketOnly()
     }
 }
 
