@@ -6,7 +6,7 @@ plugins {
 
 fun readApiBaseUrl(): String {
     val localFile = rootProject.file("local.properties")
-    val fallback = "http://192.168.1.157:5612"
+    val fallback = "https://monicastudio.ru"
     if (!localFile.exists()) return fallback
     // Читаем без java.util.Properties — в AGP `java` уже занят
     return localFile.readLines()
