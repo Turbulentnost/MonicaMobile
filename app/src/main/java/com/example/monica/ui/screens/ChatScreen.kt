@@ -11,8 +11,10 @@ import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
@@ -37,9 +39,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Done
 import androidx.compose.material.icons.outlined.DoneAll
+import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.InsertDriveFile
+import androidx.compose.material.icons.outlined.InsertEmoticon
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Button
@@ -84,6 +91,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.monica.R
+import com.example.monica.data.CallUiStatus
 import com.example.monica.data.DeliveryStatus
 import com.example.monica.data.MessageItem
 import com.example.monica.data.MonicaApi
@@ -91,12 +99,14 @@ import com.example.monica.ui.MonicaViewModel
 import com.example.monica.ui.components.AppIcon
 import com.example.monica.ui.components.CachedMediaImage
 import com.example.monica.ui.components.CodeViewerView
+import com.example.monica.ui.components.EmojiPicker
 import com.example.monica.ui.components.MonicaAppBar
 import com.example.monica.ui.components.MonacoEditorView
 import com.example.monica.ui.components.UserAvatar
 import com.example.monica.ui.components.VoiceMessagePlayer
 import com.example.monica.ui.components.VoiceRecorderController
 import com.example.monica.ui.components.formatVoiceDuration
+import com.example.monica.ui.components.rememberChatFileDownloader
 import com.example.monica.ui.util.TimeFormat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -163,6 +173,7 @@ fun ChatScreen(
     chatId: String,
     vm: MonicaViewModel,
     onBack: () -> Unit,
+    onOpenDetails: () -> Unit = {},
 ) {
     val chats by vm.chats.collectAsStateWithLifecycle()
     val messages by vm.messages.collectAsStateWithLifecycle()
@@ -175,7 +186,9 @@ fun ChatScreen(
     val incomingInvites by vm.incomingInvitesByChat.collectAsStateWithLifecycle()
     val loading by vm.loading.collectAsStateWithLifecycle()
     val darkTheme by vm.darkTheme.collectAsStateWithLifecycle()
+    val callState by vm.callState.collectAsStateWithLifecycle()
     val myId = vm.session.userId
+    val context = LocalContext.current
 
     val chat = chats.find { it.id == chatId }
     val partner = chat?.partner
@@ -185,6 +198,56 @@ fun ChatScreen(
     val incomingInvite = incomingInvites[chatId]
     val isOutgoingPending = outgoingPending.containsKey(chatId)
     val isPrivateActiveHere = privateSessionId != null && privateChatId == chatId
+    val callBusy = callState.status !in listOf(CallUiStatus.Idle, CallUiStatus.Ended)
+    val canStartCall = isOnline && !callBusy && partner != null
+    val canStartVideo = canStartCall && vm.hasCameraDevice()
+    val downloadChatFile = rememberChatFileDownloader(vm.api)
+
+    var pendingStartMode by remember { mutableStateOf<String?>(null) }
+    val callPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { grants ->
+        val mode = pendingStartMode
+        pendingStartMode = null
+        val micOk = grants[Manifest.permission.RECORD_AUDIO] == true ||
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.RECORD_AUDIO,
+            ) == PackageManager.PERMISSION_GRANTED
+        val camOk = grants[Manifest.permission.CAMERA] == true ||
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.CAMERA,
+            ) == PackageManager.PERMISSION_GRANTED
+        if (mode == null || !micOk) return@rememberLauncherForActivityResult
+        if (mode == "video" && !camOk) return@rememberLauncherForActivityResult
+        vm.startCall(chatId, mode)
+    }
+
+    fun requestStartCall(mode: String) {
+        val micOk = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.RECORD_AUDIO,
+        ) == PackageManager.PERMISSION_GRANTED
+        val camOk = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.CAMERA,
+        ) == PackageManager.PERMISSION_GRANTED
+        when {
+            mode == "audio" && micOk -> vm.startCall(chatId, "audio")
+            mode == "video" && micOk && camOk -> vm.startCall(chatId, "video")
+            mode == "video" -> {
+                pendingStartMode = "video"
+                callPermLauncher.launch(
+                    arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA),
+                )
+            }
+            else -> {
+                pendingStartMode = "audio"
+                callPermLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
+            }
+        }
+    }
 
     var input by remember { mutableStateOf("") }
     var codeMode by remember { mutableStateOf(false) }
@@ -193,20 +256,44 @@ fun ChatScreen(
     var codeText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
     val scrollToBottomTick by vm.scrollChatToBottom.collectAsStateWithLifecycle()
+    val pendingScrollToMessageId by vm.pendingScrollToMessageId.collectAsStateWithLifecycle()
+    val highlightedMessageId by vm.highlightedMessageId.collectAsStateWithLifecycle()
 
     DisposableEffect(chatId) {
         vm.openChat(chatId)
-        onDispose { vm.leaveChat() }
+        // Не вызываем leaveChat в onDispose: переход на экран деталей снимает ChatScreen
+        // с композиции, но чат должен остаться открытым (поиск → jump to message).
+        onDispose { }
+    }
+
+    val dayGroups = remember(messages) {
+        messages.groupBy { TimeFormat.dayKey(it.sentAt) }
+            .entries
+            .map { (key, msgs) ->
+                key to (TimeFormat.dayLabel(msgs.firstOrNull()?.sentAt) to msgs)
+            }
     }
 
     LaunchedEffect(chatId, messages.lastOrNull()?.id, scrollToBottomTick) {
         if (messages.isEmpty()) return@LaunchedEffect
-        // ждём, пока LazyColumn отрисует day-группы + сообщения
+        if (pendingScrollToMessageId != null) return@LaunchedEffect
         snapshotFlow { listState.layoutInfo.totalItemsCount }
             .first { it > 0 }
         val lastIndex = listState.layoutInfo.totalItemsCount - 1
         if (lastIndex >= 0) {
             listState.scrollToItem(lastIndex)
+        }
+    }
+
+    LaunchedEffect(pendingScrollToMessageId, messages) {
+        val targetId = pendingScrollToMessageId ?: return@LaunchedEffect
+        if (messages.none { it.id == targetId }) return@LaunchedEffect
+        snapshotFlow { listState.layoutInfo.totalItemsCount }
+            .first { it > 0 }
+        val index = messageListIndex(messages, targetId)
+        if (index >= 0) {
+            listState.animateScrollToItem(index)
+            vm.clearPendingScrollToMessage()
         }
     }
 
@@ -227,14 +314,6 @@ fun ChatScreen(
         }
     }
 
-    val dayGroups = remember(messages) {
-        messages.groupBy { TimeFormat.dayKey(it.sentAt) }
-            .entries
-            .map { (key, msgs) ->
-                key to (TimeFormat.dayLabel(msgs.firstOrNull()?.sentAt) to msgs)
-            }
-    }
-
     Scaffold(
         topBar = {
             MonicaAppBar(
@@ -250,6 +329,10 @@ fun ChatScreen(
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable(onClick = onOpenDetails)
+                            .padding(end = 4.dp),
                     ) {
                         UserAvatar(partner, size = 30.dp, showOnline = true, isOnline = isOnline)
                         Column(verticalArrangement = Arrangement.Center) {
@@ -269,6 +352,36 @@ fun ChatScreen(
                     }
                 },
                 actions = {
+                    IconButton(
+                        onClick = { requestStartCall("audio") },
+                        enabled = canStartCall,
+                        modifier = Modifier.size(40.dp),
+                    ) {
+                        Icon(
+                            Icons.Filled.Call,
+                            contentDescription = "Аудиозвонок",
+                            tint = if (canStartCall) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                            },
+                        )
+                    }
+                    IconButton(
+                        onClick = { requestStartCall("video") },
+                        enabled = canStartVideo,
+                        modifier = Modifier.size(40.dp),
+                    ) {
+                        Icon(
+                            Icons.Filled.Videocam,
+                            contentDescription = "Видеозвонок",
+                            tint = if (canStartVideo) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                            },
+                        )
+                    }
                     PrivateChatActionButton(
                         hasIncomingInvite = incomingInvite != null,
                         isOutgoingPending = isOutgoingPending,
@@ -310,6 +423,8 @@ fun ChatScreen(
                             chatId = chatId,
                             vm = vm,
                             darkTheme = darkTheme,
+                            highlighted = highlightedMessageId == msg.id,
+                            onDownloadFile = downloadChatFile,
                         )
                     }
                 }
@@ -396,6 +511,7 @@ private fun MessageComposer(
     val recorder = remember { VoiceRecorderController(context.applicationContext) }
     var recording by remember { mutableStateOf(false) }
     var cancelled by remember { mutableStateOf(false) }
+    var emojiPickerVisible by remember { mutableStateOf(false) }
     var elapsedMs by remember { mutableLongStateOf(0L) }
     val levels = remember { mutableStateListOf<Float>() }
     val fullRecordingLevels = remember { mutableListOf<Float>() }
@@ -484,6 +600,13 @@ private fun MessageComposer(
             .padding(horizontal = 8.dp, vertical = 8.dp),
         horizontalAlignment = Alignment.End,
     ) {
+        AnimatedVisibility(visible = emojiPickerVisible && !recording) {
+            EmojiPicker(
+                onSelect = { emoji -> onTextChange(text + emoji) },
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
+        }
+
         AnimatedVisibility(visible = recording) {
             Surface(
                 shape = RoundedCornerShape(18.dp),
@@ -609,7 +732,27 @@ private fun MessageComposer(
                 )
 
                 IconButton(
-                    onClick = onOpenCode,
+                    onClick = { emojiPickerVisible = !emojiPickerVisible },
+                    enabled = !loading && !recording,
+                    modifier = Modifier.size(44.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.InsertEmoticon,
+                        contentDescription = "Эмодзи",
+                        modifier = Modifier.size(26.dp),
+                        tint = if (emojiPickerVisible) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                }
+
+                IconButton(
+                    onClick = {
+                        emojiPickerVisible = false
+                        onOpenCode()
+                    },
                     enabled = !loading && !recording,
                     modifier = Modifier.size(44.dp),
                 ) {
@@ -910,6 +1053,19 @@ private fun codeLanguageOf(message: MessageItem): String? {
     }
 }
 
+/** Индекс сообщения в LazyColumn с учётом day-разделителей. */
+private fun messageListIndex(messages: List<MessageItem>, messageId: String): Int {
+    var index = 0
+    messages.groupBy { TimeFormat.dayKey(it.sentAt) }.values.forEach { dayMessages ->
+        index += 1 // DaySeparator
+        dayMessages.forEach { msg ->
+            if (msg.id == messageId) return index
+            index += 1
+        }
+    }
+    return -1
+}
+
 @Composable
 private fun MessageBubble(
     message: MessageItem,
@@ -917,7 +1073,37 @@ private fun MessageBubble(
     chatId: String,
     vm: MonicaViewModel,
     darkTheme: Boolean,
+    highlighted: Boolean = false,
+    onDownloadFile: (path: String?, url: String?, name: String, mime: String?) -> Unit,
 ) {
+    if (message.messageType == "call") {
+        val status = message.mimeType.orEmpty()
+        val accent = when (status) {
+            "missed", "rejected" -> Color(0xFFFF9A9A)
+            else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f)
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 6.dp, horizontal = 24.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = message.content.ifBlank { "Звонок" },
+                style = MaterialTheme.typography.labelMedium,
+                color = accent,
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = TimeFormat.messageTime(message.sentAt),
+                style = MaterialTheme.typography.labelSmall,
+                color = accent.copy(alpha = 0.65f),
+            )
+        }
+        return
+    }
+
     val codeLang = codeLanguageOf(message)
     val chrome = remember(darkTheme) { codeChrome(darkTheme) }
     val bg = when {
@@ -932,9 +1118,20 @@ private fun MessageBubble(
     }
     val delivery = message.deliveryStatus(isOwn)
     val bubbleAlpha = if (delivery == DeliveryStatus.Sending) 0.72f else 1f
+    val highlightColor by animateColorAsState(
+        targetValue = if (highlighted) {
+            MaterialTheme.colorScheme.tertiary.copy(alpha = 0.35f)
+        } else {
+            Color.Transparent
+        },
+        label = "messageHighlight",
+    )
 
     Column(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(highlightColor, RoundedCornerShape(18.dp))
+            .padding(vertical = 2.dp),
         horizontalAlignment = if (isOwn) Alignment.End else Alignment.Start,
     ) {
         Column(
@@ -969,6 +1166,7 @@ private fun MessageBubble(
                         chatId = chatId,
                         vm = vm,
                         darkTheme = darkTheme,
+                        onDownloadFile = onDownloadFile,
                     )
                 }
                 message.messageType == "voice" -> {
@@ -986,10 +1184,10 @@ private fun MessageBubble(
                     }
                 }
                 message.messageType == "file" -> {
-                    Text(
-                        message.fileName ?: "Файл",
-                        color = fg,
-                        fontWeight = FontWeight.Medium,
+                    FileMessageBody(
+                        message = message,
+                        fg = fg,
+                        onDownloadFile = onDownloadFile,
                     )
                 }
                 else -> Text(message.content, color = fg)
@@ -1062,12 +1260,56 @@ private fun MessageDeliveryStatus(
 }
 
 @Composable
+private fun FileMessageBody(
+    message: MessageItem,
+    fg: Color,
+    onDownloadFile: (path: String?, url: String?, name: String, mime: String?) -> Unit,
+) {
+    val name = message.fileName ?: "Файл"
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable {
+                onDownloadFile(
+                    message.content.takeIf { it.isNotBlank() },
+                    message.contentUrl,
+                    name,
+                    message.mimeType,
+                )
+            },
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Icon(
+            Icons.Outlined.InsertDriveFile,
+            contentDescription = null,
+            tint = fg,
+            modifier = Modifier.size(22.dp),
+        )
+        Text(
+            name,
+            color = fg,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.weight(1f),
+            maxLines = 2,
+        )
+        Icon(
+            Icons.Outlined.Download,
+            contentDescription = "Скачать",
+            tint = fg.copy(alpha = 0.9f),
+            modifier = Modifier.size(22.dp),
+        )
+    }
+}
+
+@Composable
 private fun CodeMessageBody(
     message: MessageItem,
     language: String,
     chatId: String,
     vm: MonicaViewModel,
     darkTheme: Boolean,
+    onDownloadFile: (path: String?, url: String?, name: String, mime: String?) -> Unit,
 ) {
     var codeText by remember(message.id) { mutableStateOf<String?>(null) }
     var loadError by remember(message.id) { mutableStateOf<String?>(null) }
@@ -1108,6 +1350,24 @@ private fun CodeMessageBody(
                 maxLines = 1,
             )
             Text(langLabel, color = chrome.accent, style = MaterialTheme.typography.labelSmall)
+            IconButton(
+                onClick = {
+                    onDownloadFile(
+                        message.content.takeIf { it.isNotBlank() },
+                        message.contentUrl,
+                        label,
+                        message.mimeType,
+                    )
+                },
+                modifier = Modifier.size(32.dp),
+            ) {
+                Icon(
+                    Icons.Outlined.Download,
+                    contentDescription = "Скачать",
+                    tint = chrome.accent,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
             OutlinedButton(
                 onClick = {
                     if (running) return@OutlinedButton

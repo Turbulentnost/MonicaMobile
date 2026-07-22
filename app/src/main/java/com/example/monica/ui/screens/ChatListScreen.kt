@@ -83,6 +83,8 @@ fun ChatListScreen(
     val onlineIds by vm.onlineIds.collectAsStateWithLifecycle()
     val inviteBanner by vm.inviteBanner.collectAsStateWithLifecycle()
     val incomingInvites by vm.incomingInvitesByChat.collectAsStateWithLifecycle()
+    val callState by vm.callState.collectAsStateWithLifecycle()
+    val ringingChatId = callState.ringingChatId
 
     var query by remember { mutableStateOf("") }
     val unread = notifications.count { !it.isRead }
@@ -220,6 +222,8 @@ fun ChatListScreen(
                             chat = chat,
                             isOnline = onlineIds.contains(chat.partner?.id),
                             hasPrivateInvite = hasInvite,
+                            isRinging = ringingChatId == chat.id,
+                            isVideoRinging = ringingChatId == chat.id && callState.isVideo,
                             onClick = { onOpenChat(chat.id) },
                             onAcceptInvite = { vm.acceptInviteForChat(chat.id) },
                         )
@@ -332,14 +336,20 @@ private fun ChatRow(
     chat: ChatSummary,
     isOnline: Boolean,
     hasPrivateInvite: Boolean,
+    isRinging: Boolean,
+    isVideoRinging: Boolean,
     onClick: () -> Unit,
     onAcceptInvite: () -> Unit,
 ) {
     val preview = when {
+        isRinging -> if (isVideoRinging) "Входящий видеозвонок…" else "Входящий аудиозвонок…"
         hasPrivateInvite -> "Приглашение в приватный чат"
         chat.lastMessage == null -> "Нет сообщений"
         chat.lastMessage.messageType == "photo" -> "Фото"
         chat.lastMessage.messageType == "voice" -> "Голосовое сообщение"
+        chat.lastMessage.messageType == "call" -> {
+            chat.lastMessage.content.ifBlank { "Звонок" }
+        }
         chat.lastMessage.messageType == "file" -> {
             val name = chat.lastMessage.fileName.orEmpty()
             when {
@@ -389,10 +399,10 @@ private fun ChatRow(
                 Text(
                     preview,
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (hasPrivateInvite) {
-                        Color(0xFFFF5252)
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
+                    color = when {
+                        isRinging -> Color(0xFF43A047)
+                        hasPrivateInvite -> Color(0xFFFF5252)
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
                     },
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,

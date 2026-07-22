@@ -34,6 +34,16 @@ class SessionStore(context: Context) {
         get() = prefs.getBoolean(KEY_DARK_THEME, true)
         set(value) = prefs.edit().putBoolean(KEY_DARK_THEME, value).apply()
 
+    /** Стабильный id инстанса клиента для изоляции звонков между устройствами. */
+    val callClientInstanceId: String
+        get() {
+            val existing = prefs.getString(KEY_CALL_CLIENT_INSTANCE, null)
+            if (!existing.isNullOrBlank()) return existing
+            val created = java.util.UUID.randomUUID().toString()
+            prefs.edit().putString(KEY_CALL_CLIENT_INSTANCE, created).apply()
+            return created
+        }
+
     val isLoggedIn: Boolean
         get() = !accessToken.isNullOrBlank()
 
@@ -67,5 +77,6 @@ class SessionStore(context: Context) {
         private const val KEY_USER_ID = "user_id"
         private const val KEY_NICKNAME = "nickname"
         private const val KEY_DARK_THEME = "dark_theme"
+        private const val KEY_CALL_CLIENT_INSTANCE = "call_client_instance_id"
     }
 }

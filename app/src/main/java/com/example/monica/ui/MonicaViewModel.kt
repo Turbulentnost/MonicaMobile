@@ -1,20 +1,26 @@
 package com.example.monica.ui
 
 import android.app.Application
+import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.monica.data.AppNotification
 import com.example.monica.data.AvatarCache
+import com.example.monica.data.CallUiState
+import com.example.monica.data.CallUiStatus
 import com.example.monica.data.ChatSummary
 import com.example.monica.data.MessageItem
 import com.example.monica.data.MonicaApi
 import com.example.monica.data.PrivateNavTarget
 import com.example.monica.data.SessionStore
 import com.example.monica.data.UserProfile
+import com.example.monica.data.call.CallController
 import com.example.monica.data.isPendingPrivateInvite
 import com.example.monica.data.ws.ChatSocket
-import com.example.monica.data.ws.PresenceSocket
+import com.example.monica.data.ws.PresenceHub
 import com.example.monica.data.ws.PrivateSocket
+import com.example.monica.push.MonicaDaemonService
 import com.example.monica.push.PushRegistrar
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -38,9 +44,17 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
     val session = SessionStore(app)
     val api = MonicaApi(session)
 
-    private val presence = PresenceSocket(session, viewModelScope)
+    private val presence = PresenceHub.get(app)
     private val chatSocket = ChatSocket(session, viewModelScope)
     private val privateSocket = PrivateSocket(session, viewModelScope)
+    val callController = CallController(
+        appContext = app.applicationContext,
+        api = api,
+        session = session,
+        scope = viewModelScope,
+    )
+
+    val callState: StateFlow<CallUiState> = callController.state
 
     private val _darkTheme = MutableStateFlow(session.darkTheme)
     val darkTheme: StateFlow<Boolean> = _darkTheme.asStateFlow()
@@ -91,6 +105,13 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
     private val _scrollChatToBottom = MutableStateFlow(0L)
     val scrollChatToBottom: StateFlow<Long> = _scrollChatToBottom.asStateFlow()
 
+    /** Прокрутка к сообщению из поиска в деталях чата */
+    private val _pendingScrollToMessageId = MutableStateFlow<String?>(null)
+    val pendingScrollToMessageId: StateFlow<String?> = _pendingScrollToMessageId.asStateFlow()
+
+    private val _highlightedMessageId = MutableStateFlow<String?>(null)
+    val highlightedMessageId: StateFlow<String?> = _highlightedMessageId.asStateFlow()
+
     private val _myPrivateText = MutableStateFlow("")
     val myPrivateText: StateFlow<String> = _myPrivateText.asStateFlow()
 
@@ -103,6 +124,12 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _loading = MutableStateFlow(false)
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
+
+    private val _currentUser = MutableStateFlow<UserProfile?>(null)
+    val currentUser: StateFlow<UserProfile?> = _currentUser.asStateFlow()
+
+    private val _profileSaving = MutableStateFlow(false)
+    val profileSaving: StateFlow<Boolean> = _profileSaving.asStateFlow()
 
     private val _inviteBanner = MutableStateFlow<AppNotification?>(null)
     val inviteBanner: StateFlow<AppNotification?> = _inviteBanner.asStateFlow()
@@ -129,6 +156,25 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
             startRealtime()
             refreshChats()
             refreshNotifications()
+            loadCurrentUser()
+            callController.restoreActiveCallIfAny()
+        }
+        viewModelScope.launch {
+            presence.callEvents.collect { event ->
+                callController.onCallEvent(event)
+            }
+        }
+        viewModelScope.launch {
+            var lastCallError: String? = null
+            callController.state.collect { state ->
+                val msg = state.error?.takeIf { it.isNotBlank() }
+                if (msg != null && msg != lastCallError) {
+                    lastCallError = msg
+                    _error.value = msg
+                } else if (msg == null) {
+                    lastCallError = null
+                }
+            }
         }
         viewModelScope.launch {
             presence.notifications.collect { n ->
@@ -253,6 +299,8 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
                 startRealtime()
                 refreshChats()
                 refreshNotifications()
+                loadCurrentUser()
+                callController.restoreActiveCallIfAny()
                 runCatching {
                     withContext(Dispatchers.IO) {
                         PushRegistrar.registerCurrentToken(getApplication())
@@ -267,12 +315,226 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun sendRegistrationCode(email: String, onSuccess: (debugCode: String?) -> Unit) {
+        viewModelScope.launch {
+            _loading.value = true
+            _error.value = null
+            try {
+                val debugCode = withContext(Dispatchers.IO) {
+                    api.registerEmail(email)
+                }
+                onSuccess(debugCode)
+            } catch (e: Exception) {
+                _error.value = e.message
+            } finally {
+                _loading.value = false
+            }
+        }
+    }
+
+    fun verifyRegistrationCode(
+        email: String,
+        code: String,
+        onSuccess: (String) -> Unit,
+    ) {
+        viewModelScope.launch {
+            _loading.value = true
+            _error.value = null
+            try {
+                val token = withContext(Dispatchers.IO) {
+                    api.verifyRegistrationCode(email, code)
+                }
+                onSuccess(token)
+            } catch (e: Exception) {
+                _error.value = e.message
+            } finally {
+                _loading.value = false
+            }
+        }
+    }
+
+    fun saveRegistrationProfile(
+        registrationToken: String,
+        firstName: String,
+        lastName: String,
+        password: String,
+        nickname: String,
+        city: String,
+        birthDate: String? = null,
+        onSuccess: () -> Unit,
+    ) {
+        viewModelScope.launch {
+            _loading.value = true
+            _error.value = null
+            try {
+                withContext(Dispatchers.IO) {
+                    api.registerProfile(
+                        registrationToken = registrationToken,
+                        firstName = firstName,
+                        lastName = lastName,
+                        password = password,
+                        nickname = nickname,
+                        city = city,
+                        birthDate = birthDate,
+                    )
+                }
+                onSuccess()
+            } catch (e: Exception) {
+                _error.value = e.message
+            } finally {
+                _loading.value = false
+            }
+        }
+    }
+
+    fun completeRegistration(
+        registrationToken: String,
+        avatarUri: Uri? = null,
+        onSuccess: () -> Unit,
+    ) {
+        viewModelScope.launch {
+            _loading.value = true
+            _error.value = null
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    if (avatarUri != null) {
+                        val resolver = getApplication<Application>().contentResolver
+                        val mimeType = resolver.getType(avatarUri) ?: "image/jpeg"
+                        val fileName = resolver.query(avatarUri, null, null, null, null)?.use { cursor ->
+                            val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                            if (cursor.moveToFirst() && nameIndex >= 0) {
+                                cursor.getString(nameIndex)
+                            } else {
+                                null
+                            }
+                        } ?: "avatar.jpg"
+                        val bytes = resolver.openInputStream(avatarUri)?.use { it.readBytes() }
+                            ?: throw IllegalStateException("Не удалось прочитать фото")
+                        api.registerAvatar(
+                            registrationToken = registrationToken,
+                            photoBytes = bytes,
+                            fileName = fileName,
+                            mimeType = mimeType,
+                        )
+                    }
+                    api.completeRegistration(registrationToken)
+                }
+                session.saveLogin(result.access, result.refresh, result.userId, result.nickname)
+                _loggedIn.value = true
+                startRealtime()
+                refreshChats()
+                refreshNotifications()
+                loadCurrentUser()
+                callController.restoreActiveCallIfAny()
+                runCatching {
+                    withContext(Dispatchers.IO) {
+                        PushRegistrar.registerCurrentToken(getApplication())
+                    }
+                }
+                onSuccess()
+            } catch (e: Exception) {
+                _error.value = e.message
+            } finally {
+                _loading.value = false
+            }
+        }
+    }
+
+    fun loadCurrentUser(onDone: (() -> Unit)? = null) {
+        viewModelScope.launch {
+            try {
+                val user = withContext(Dispatchers.IO) { api.me() }
+                _currentUser.value = user
+                if (user.nickname.isNotBlank()) {
+                    session.nickname = user.nickname
+                }
+                AvatarCache.warm(getApplication(), session, user)
+            } catch (e: Exception) {
+                if (_currentUser.value == null) {
+                    _error.value = e.message
+                }
+            } finally {
+                onDone?.invoke()
+            }
+        }
+    }
+
+    fun saveAccountProfile(
+        firstName: String,
+        lastName: String,
+        city: String,
+        birthDate: String?,
+        avatarUri: Uri?,
+        onSuccess: () -> Unit,
+    ) {
+        viewModelScope.launch {
+            _profileSaving.value = true
+            _error.value = null
+            try {
+                val previous = _currentUser.value
+                val updated = withContext(Dispatchers.IO) {
+                    var user = api.updateProfile(
+                        firstName = firstName,
+                        lastName = lastName,
+                        city = city,
+                        birthDate = birthDate,
+                    )
+                    if (avatarUri != null) {
+                        val resolver = getApplication<Application>().contentResolver
+                        val mimeType = resolver.getType(avatarUri) ?: "image/jpeg"
+                        if (!ALLOWED_AVATAR_MIME.contains(mimeType.lowercase())) {
+                            throw IllegalStateException("Поддерживаются JPG, PNG, WEBP и GIF")
+                        }
+                        val fileName = resolver.query(avatarUri, null, null, null, null)?.use { cursor ->
+                            val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                            if (cursor.moveToFirst() && nameIndex >= 0) {
+                                cursor.getString(nameIndex)
+                            } else {
+                                null
+                            }
+                        } ?: "avatar.jpg"
+                        val bytes = resolver.openInputStream(avatarUri)?.use { it.readBytes() }
+                            ?: throw IllegalStateException("Не удалось прочитать фото")
+                        if (bytes.size > MAX_AVATAR_BYTES) {
+                            throw IllegalStateException("Файл больше 10 МБ")
+                        }
+                        user = api.updateAvatar(
+                            photoBytes = bytes,
+                            fileName = fileName,
+                            mimeType = mimeType,
+                        )
+                    }
+                    user
+                }
+                AvatarCache.invalidate(getApplication(), AvatarCache.cacheKey(previous))
+                AvatarCache.invalidate(getApplication(), AvatarCache.cacheKey(updated))
+                AvatarCache.warm(getApplication(), session, updated)
+                _currentUser.value = updated
+                if (updated.nickname.isNotBlank()) {
+                    session.nickname = updated.nickname
+                }
+                onSuccess()
+            } catch (e: Exception) {
+                _error.value = e.message
+            } finally {
+                _profileSaving.value = false
+            }
+        }
+    }
+
     fun logout() {
         viewModelScope.launch {
+            when (callController.state.value.status) {
+                CallUiStatus.Incoming -> callController.rejectCall()
+                CallUiStatus.Outgoing -> callController.cancelCall()
+                CallUiStatus.Connecting, CallUiStatus.Active -> callController.hangup()
+                else -> Unit
+            }
             withContext(Dispatchers.IO) { api.leavePrivate() }
             stopRealtime()
             session.clearAuth()
             _loggedIn.value = false
+            _currentUser.value = null
             _chats.value = emptyList()
             _messages.value = emptyList()
             _notifications.value = emptyList()
@@ -282,12 +544,53 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun startCall(chatId: String, mediaMode: String = "audio") =
+        callController.startCall(chatId, mediaMode)
+
+    fun acceptCall() = callController.acceptCall()
+    fun rejectCall() = callController.rejectCall()
+    fun cancelCall() = callController.cancelCall()
+    fun hangupCall() = callController.hangup()
+    fun toggleCallMute() = callController.toggleMute()
+    fun cycleCallAudioRoute() = callController.cycleAudioRoute()
+    fun toggleCallCamera() = callController.toggleCamera()
+    fun upgradeCallToVideo() = callController.upgradeToVideo()
+    fun hasCameraDevice(): Boolean = callController.hasCameraDevice()
+
+    fun handleIncomingCallIntent(
+        callId: String,
+        chatId: String,
+        mediaMode: String,
+        callerId: String,
+        callerNickname: String,
+        action: String?,
+    ) {
+        if (callId.isBlank()) return
+        callController.presentIncomingFromPush(
+            callId = callId,
+            chatId = chatId,
+            mediaMode = mediaMode,
+            callerId = callerId,
+            callerNickname = callerNickname,
+        )
+        if (chatId.isNotBlank()) {
+            openChatFromNotification(chatId)
+        }
+        when (action) {
+            com.example.monica.push.CallNotificationHelper.ACTION_ACCEPT -> acceptCall()
+            com.example.monica.push.CallNotificationHelper.ACTION_REJECT -> rejectCall()
+            else -> Unit
+        }
+    }
+
     private fun startRealtime() {
-        presence.connect()
+        PresenceHub.ensureConnected(getApplication())
+        MonicaDaemonService.start(getApplication())
     }
 
     private fun stopRealtime() {
-        presence.disconnect(reconnect = false)
+        MonicaDaemonService.stop(getApplication())
+        PresenceHub.disconnect()
         chatSocket.disconnect()
         privateSocket.disconnect()
     }
@@ -369,14 +672,59 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun openChat(chatId: String) {
+        if (chatId.isBlank()) return
+        // Повторный вход в тот же чат (например после экрана деталей) — не сбрасываем историю.
+        if (currentChatId == chatId) {
+            chatSocket.connect(chatId)
+            if (_messages.value.isEmpty()) {
+                openChatJob?.cancel()
+                openChatJob = viewModelScope.launch {
+                    refreshOpenChatMessages(chatId)
+                }
+            }
+            return
+        }
         openChatJob?.cancel()
         currentChatId = chatId
         _partnerTyping.value = false
         _messages.value = emptyList()
+        _pendingScrollToMessageId.value = null
+        _highlightedMessageId.value = null
         chatSocket.connect(chatId)
         openChatJob = viewModelScope.launch {
             refreshOpenChatMessages(chatId)
         }
+    }
+
+    fun jumpToMessage(chatId: String, messageId: String) {
+        if (chatId.isBlank() || messageId.isBlank()) return
+        viewModelScope.launch {
+            try {
+                val inMemory = _messages.value.any { it.id == messageId }
+                if (!inMemory) {
+                    val window = withContext(Dispatchers.IO) {
+                        api.listMessages(chatId = chatId, around = messageId, limit = 100)
+                    }
+                    if (currentChatId == chatId) {
+                        _messages.value = window
+                    }
+                }
+                _pendingScrollToMessageId.value = messageId
+                _highlightedMessageId.value = messageId
+            } catch (e: Exception) {
+                _error.value = e.message
+            }
+        }
+        viewModelScope.launch {
+            delay(2200)
+            if (_highlightedMessageId.value == messageId) {
+                _highlightedMessageId.value = null
+            }
+        }
+    }
+
+    fun clearPendingScrollToMessage() {
+        _pendingScrollToMessageId.value = null
     }
 
     private suspend fun refreshOpenChatMessages(chatId: String) {
@@ -851,6 +1199,7 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearError() {
         _error.value = null
+        callController.clearError()
     }
 
     fun chatById(id: String): ChatSummary? = _chats.value.find { it.id == id }
@@ -858,7 +1207,21 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
     fun isUserOnline(userId: String?): Boolean = presence.isOnline(userId)
 
     override fun onCleared() {
-        stopRealtime()
+        // Presence + daemon продолжают жить в фоне — иначе при закрытии UI звонки пропадут.
+        callController.dispose()
+        chatSocket.disconnect()
+        privateSocket.disconnect()
         super.onCleared()
+    }
+
+    companion object {
+        private const val MAX_AVATAR_BYTES = 10 * 1024 * 1024
+        private val ALLOWED_AVATAR_MIME = setOf(
+            "image/jpeg",
+            "image/jpg",
+            "image/png",
+            "image/webp",
+            "image/gif",
+        )
     }
 }

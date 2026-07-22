@@ -12,6 +12,9 @@ data class UserProfile(
     val lastSeenAt: String? = null,
     /** Для инвалидации кэша аватара вместе с `photo` */
     val updatedAt: String? = null,
+    val email: String = "",
+    val city: String = "",
+    val birthDate: String? = null,
 )
 
 data class ChatSummary(
@@ -19,6 +22,14 @@ data class ChatSummary(
     val partner: UserProfile?,
     val lastMessage: MessageItem?,
     val updatedAt: String? = null,
+)
+
+data class MessageAttachment(
+    val path: String? = null,
+    val contentUrl: String? = null,
+    val fileName: String? = null,
+    val mimeType: String? = null,
+    val fileSize: Long? = null,
 )
 
 data class MessageItem(
@@ -31,6 +42,8 @@ data class MessageItem(
     val fileName: String? = null,
     val mimeType: String? = null,
     val fileSize: Long? = null,
+    val caption: String? = null,
+    val attachments: List<MessageAttachment> = emptyList(),
     val waveform: List<Float> = emptyList(),
     val voiceDurationMs: Long? = null,
     val sentAt: String,
@@ -79,6 +92,77 @@ data class PrivateNavTarget(
     val sessionId: String,
     val chatId: String,
 )
+
+enum class CallUiStatus {
+    Idle,
+    Outgoing,
+    Incoming,
+    Connecting,
+    Active,
+    Ended,
+}
+
+/** Маршрут вывода звука во время звонка. */
+enum class CallAudioRoute {
+    Earpiece,
+    Speaker,
+    Bluetooth,
+}
+
+data class CallSession(
+    val id: String,
+    val chatId: String?,
+    val caller: UserProfile?,
+    val callee: UserProfile?,
+    val status: String,
+    val mediaMode: String = "audio",
+    val clientInstanceId: String? = null,
+    val acceptedClientInstanceId: String? = null,
+    val endReason: String? = null,
+) {
+    val isVideo: Boolean get() = mediaMode == "video"
+
+    fun partner(myUserId: String?): UserProfile? {
+        if (myUserId.isNullOrBlank()) return null
+        return if (caller?.id == myUserId) callee else caller
+    }
+
+    fun isCaller(myUserId: String?): Boolean =
+        !myUserId.isNullOrBlank() && caller?.id == myUserId
+}
+
+data class IceServerConfig(
+    val urls: List<String>,
+    val username: String? = null,
+    val credential: String? = null,
+)
+
+data class CallUiState(
+    val status: CallUiStatus = CallUiStatus.Idle,
+    val call: CallSession? = null,
+    val partner: UserProfile? = null,
+    val mediaMode: String = "audio",
+    val cameraEnabled: Boolean = false,
+    val hasRemoteVideo: Boolean = false,
+    /** Инкремент при смене video track — Compose перепривязывает sink. */
+    val videoEpoch: Int = 0,
+    val muted: Boolean = false,
+    val audioRoute: CallAudioRoute = CallAudioRoute.Earpiece,
+    val bluetoothAvailable: Boolean = false,
+    val elapsedSeconds: Int = 0,
+    val error: String? = null,
+) {
+    val isVideo: Boolean get() = mediaMode == "video"
+
+    val isInCall: Boolean
+        get() = status == CallUiStatus.Outgoing ||
+            status == CallUiStatus.Incoming ||
+            status == CallUiStatus.Connecting ||
+            status == CallUiStatus.Active
+
+    val ringingChatId: String?
+        get() = if (status == CallUiStatus.Incoming) call?.chatId else null
+}
 
 fun AppNotification.isPendingPrivateInvite(): Boolean =
     type == "private_invite" &&

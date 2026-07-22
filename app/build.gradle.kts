@@ -6,7 +6,7 @@ plugins {
 
 fun readApiBaseUrl(): String {
     val localFile = rootProject.file("local.properties")
-    val fallback = "https://monicastudio.ru"
+    val fallback = "https://metamonica.ru"
     if (!localFile.exists()) return fallback
     // Читаем без java.util.Properties — в AGP `java` уже занят
     return localFile.readLines()
@@ -78,6 +78,8 @@ dependencies {
     implementation(libs.okhttp.logging)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.coroutines.play.services)
+    // Прямая координата: alias libs.webrtc.sdk иногда не генерируется в Version Catalog
+    implementation("io.github.webrtc-sdk:android:144.7559.09")
 
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))

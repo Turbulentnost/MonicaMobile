@@ -7,7 +7,6 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.example.monica.MainActivity
 import com.example.monica.MonicaApp
-import com.example.monica.R
 import com.example.monica.data.MonicaApi
 import com.example.monica.data.SessionStore
 import com.google.firebase.messaging.FirebaseMessagingService
@@ -30,12 +29,38 @@ class MonicaFirebaseMessagingService : FirebaseMessagingService() {
 
     override fun onMessageReceived(message: RemoteMessage) {
         super.onMessageReceived(message)
+        val type = message.data["type"].orEmpty()
+        if (type == "incoming_call") {
+            handleIncomingCall(message)
+            return
+        }
+        showMessageNotification(message)
+    }
+
+    private fun handleIncomingCall(message: RemoteMessage) {
+        val callId = message.data["call_id"].orEmpty()
+        if (callId.isBlank()) return
+        // Поднимаем presence-демон (если процесс проснулся только от FCM).
+        MonicaDaemonService.start(this)
+        CallNotificationHelper.showIncoming(
+            context = this,
+            callId = callId,
+            chatId = message.data["chat_id"].orEmpty(),
+            mediaMode = message.data["media_mode"].orEmpty().ifBlank { "audio" },
+            callerNickname = message.data["caller_nickname"].orEmpty(),
+            callerId = message.data["caller_id"].orEmpty(),
+        )
+        // Full-screen intent на уведомлении сам откроет UI; startActivity из фона на Android 10+ часто блокируется.
+    }
+
+    private fun showMessageNotification(message: RemoteMessage) {
         val title = message.notification?.title
             ?: message.data["title"]
             ?: "Monica"
         val body = message.notification?.body
             ?: message.data["body"]
             ?: "Новое сообщение"
+        val type = message.data["type"].orEmpty()
 
         val chatId = message.data["chat_id"].orEmpty().ifBlank {
             message.data["chatId"].orEmpty()
@@ -51,7 +76,7 @@ class MonicaFirebaseMessagingService : FirebaseMessagingService() {
                 putExtra("chat_id", chatId)
             }
         }
-        val requestCode = if (chatId.isNotBlank()) chatId.hashCode() else 0
+        val requestCode = if (chatId.isNotBlank()) chatId.hashCode() else title.hashCode()
         val pending = PendingIntent.getActivity(
             this,
             requestCode,
@@ -59,18 +84,51 @@ class MonicaFirebaseMessagingService : FirebaseMessagingService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-        val notification = NotificationCompat.Builder(this, MonicaApp.CHANNEL_MESSAGES)
-            .setSmallIcon(R.mipmap.ic_launcher)
+        val avatar = NotificationStyle.letterAvatar(title)
+        val builder = NotificationCompat.Builder(this, MonicaApp.CHANNEL_MESSAGES)
             .setContentTitle(title)
             .setContentText(body)
+            .setSubText("Monica")
+            .setLargeIcon(avatar)
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(
+                if (type == "chat_message" || chatId.isNotBlank()) {
+                    NotificationCompat.CATEGORY_MESSAGE
+                } else {
+                    NotificationCompat.CATEGORY_SOCIAL
+                },
+            )
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setContentIntent(pending)
-            .build()
+            .setShowWhen(true)
+            .setWhen(message.sentTime.takeIf { it > 0L } ?: System.currentTimeMillis())
+
+        NotificationStyle.applyMonicaChrome(builder, this)
+
+        if (type == "chat_message" || chatId.isNotBlank()) {
+            builder.setStyle(
+                NotificationStyle.messagingStyle(
+                    senderName = title,
+                    body = body,
+                    timestampMs = message.sentTime.takeIf { it > 0L } ?: System.currentTimeMillis(),
+                ),
+            )
+            if (chatId.isNotBlank()) {
+                builder.setGroup("monica_chat_$chatId")
+            }
+        } else {
+            builder.setStyle(
+                NotificationCompat.BigTextStyle()
+                    .bigText(body)
+                    .setBigContentTitle(title)
+                    .setSummaryText("Monica"),
+            )
+        }
 
         NotificationManagerCompat.from(this).notify(
             (message.messageId ?: "${chatId}:${System.currentTimeMillis()}").hashCode(),
-            notification,
+            builder.build(),
         )
     }
 

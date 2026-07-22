@@ -2,6 +2,7 @@ package com.example.monica.data
 
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -46,9 +47,143 @@ class MonicaApi(private val sessionStore: SessionStore) {
         )
     }
 
+    /** @return debug_code when backend returns it (DEBUG / no SMTP). */
+    fun registerEmail(email: String): String? {
+        val body = JSONObject()
+            .put("email", email)
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        val json = execute(
+            Request.Builder()
+                .url("${sessionStore.apiBaseUrl}/api/auth/register/email/")
+                .post(body)
+                .build(),
+        )
+        return json.optString("debug_code").takeIf { it.isNotBlank() && it != "null" }
+    }
+
+    fun verifyRegistrationCode(email: String, code: String): String {
+        val body = JSONObject()
+            .put("email", email)
+            .put("code", code)
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        return execute(
+            Request.Builder()
+                .url("${sessionStore.apiBaseUrl}/api/auth/register/verify-code/")
+                .post(body)
+                .build(),
+        ).getString("registration_token")
+    }
+
+    fun registerProfile(
+        registrationToken: String,
+        firstName: String,
+        lastName: String,
+        password: String,
+        nickname: String,
+        city: String,
+        birthDate: String? = null,
+    ) {
+        val body = JSONObject()
+            .put("registration_token", registrationToken)
+            .put("first_name", firstName)
+            .put("last_name", lastName)
+            .put("password", password)
+            .put("nickname", nickname)
+            .put("city", city)
+            .put("birth_date", birthDate?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        execute(
+            Request.Builder()
+                .url("${sessionStore.apiBaseUrl}/api/auth/register/profile/")
+                .post(body)
+                .build(),
+        )
+    }
+
+    fun registerAvatar(
+        registrationToken: String,
+        photoBytes: ByteArray,
+        fileName: String,
+        mimeType: String,
+    ) {
+        val mediaType = mimeType.ifBlank { "image/jpeg" }.toMediaType()
+        val body = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart("registration_token", registrationToken)
+            .addFormDataPart(
+                "photo",
+                fileName.ifBlank { "avatar.jpg" },
+                photoBytes.toRequestBody(mediaType),
+            )
+            .build()
+        execute(
+            Request.Builder()
+                .url("${sessionStore.apiBaseUrl}/api/auth/register/avatar/")
+                .post(body)
+                .build(),
+        )
+    }
+
+    fun completeRegistration(registrationToken: String): LoginResult {
+        val body = JSONObject()
+            .put("registration_token", registrationToken)
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        val json = execute(
+            Request.Builder()
+                .url("${sessionStore.apiBaseUrl}/api/auth/register/complete/")
+                .post(body)
+                .build(),
+        )
+        val tokens = json.getJSONObject("tokens")
+        val user = json.getJSONObject("user")
+        return LoginResult(
+            access = tokens.getString("access"),
+            refresh = tokens.getString("refresh"),
+            userId = user.getString("id"),
+            nickname = user.getString("nickname"),
+        )
+    }
+
     fun me(): UserProfile {
         val json = authGet("/api/auth/me/")
         return Companion.parseUser(json)
+    }
+
+    fun updateProfile(
+        firstName: String,
+        lastName: String,
+        city: String,
+        birthDate: String? = null,
+    ): UserProfile {
+        val body = JSONObject()
+            .put("first_name", firstName)
+            .put("last_name", lastName)
+            .put("city", city)
+            .put("birth_date", birthDate?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        return Companion.parseUser(authPatch("/api/auth/me/", body))
+    }
+
+    fun updateAvatar(
+        photoBytes: ByteArray,
+        fileName: String,
+        mimeType: String,
+    ): UserProfile {
+        val mediaType = mimeType.ifBlank { "image/jpeg" }.toMediaType()
+        val body = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart(
+                "photo",
+                fileName.ifBlank { "avatar.jpg" },
+                photoBytes.toRequestBody(mediaType),
+            )
+            .build()
+        return Companion.parseUser(authPost("/api/auth/me/avatar/", body))
     }
 
     fun listChats(): List<ChatSummary> {
@@ -56,12 +191,27 @@ class MonicaApi(private val sessionStore: SessionStore) {
         return (0 until arr.length()).map { Companion.parseChat(arr.getJSONObject(it)) }
     }
 
-    fun listMessages(chatId: String, limit: Int = 100): List<MessageItem> {
-        val url = "${sessionStore.apiBaseUrl}/api/chats/$chatId/messages/".toHttpUrl()
+    fun listMessages(
+        chatId: String,
+        limit: Int = 100,
+        query: String? = null,
+        around: String? = null,
+    ): List<MessageItem> {
+        val builder = "${sessionStore.apiBaseUrl}/api/chats/$chatId/messages/".toHttpUrl()
             .newBuilder()
             .addQueryParameter("limit", limit.coerceIn(1, 200).toString())
-            .build()
-        val arr = authGetArray(url.toString(), absolute = true)
+        if (!query.isNullOrBlank()) {
+            builder.addQueryParameter("q", query)
+        }
+        if (!around.isNullOrBlank()) {
+            builder.addQueryParameter("around", around)
+        }
+        val arr = authGetArray(builder.build().toString(), absolute = true)
+        return (0 until arr.length()).map { Companion.parseMessage(arr.getJSONObject(it)) }
+    }
+
+    fun listChatFiles(chatId: String): List<MessageItem> {
+        val arr = authGetArray("/api/chats/$chatId/files/")
         return (0 until arr.length()).map { Companion.parseMessage(arr.getJSONObject(it)) }
     }
 
@@ -117,6 +267,96 @@ class MonicaApi(private val sessionStore: SessionStore) {
         runCatching {
             authPost("/api/private/leave/", "{}".toRequestBody(JSON_MEDIA_TYPE))
         }
+    }
+
+    fun startCall(
+        chatId: String,
+        clientInstanceId: String,
+        mediaMode: String = "audio",
+    ): CallSession {
+        val body = JSONObject()
+            .put("client_instance_id", clientInstanceId)
+            .put("media_mode", if (mediaMode == "video") "video" else "audio")
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        return Companion.parseCall(authPost("/api/chats/$chatId/calls/start/", body))
+    }
+
+    fun setCallMediaMode(callId: String, mediaMode: String = "video"): CallSession {
+        val body = JSONObject()
+            .put("media_mode", mediaMode)
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        return Companion.parseCall(authPost("/api/calls/$callId/media-mode/", body))
+    }
+
+    fun acceptCall(callId: String, clientInstanceId: String): CallSession {
+        val body = JSONObject()
+            .put("client_instance_id", clientInstanceId)
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        return Companion.parseCall(authPost("/api/calls/$callId/accept/", body))
+    }
+
+    fun rejectCall(callId: String, endReason: String = "rejected"): CallSession {
+        val body = JSONObject()
+            .put("end_reason", endReason)
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        return Companion.parseCall(authPost("/api/calls/$callId/reject/", body))
+    }
+
+    fun cancelCall(callId: String, endReason: String = "cancelled"): CallSession {
+        val body = JSONObject()
+            .put("end_reason", endReason)
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        return Companion.parseCall(authPost("/api/calls/$callId/cancel/", body))
+    }
+
+    fun hangupCall(callId: String, endReason: String = "hangup"): CallSession {
+        val body = JSONObject()
+            .put("end_reason", endReason)
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        return Companion.parseCall(authPost("/api/calls/$callId/hangup/", body))
+    }
+
+    fun activeCall(): CallSession? {
+        val json = authGet("/api/calls/active/")
+        val call = json.optJSONObject("call") ?: return null
+        if (call == JSONObject.NULL) return null
+        return Companion.parseCall(call)
+    }
+
+    fun iceServers(): List<IceServerConfig> {
+        val json = authGet("/api/calls/ice-config/")
+        val arr = json.optJSONArray("ice_servers") ?: return emptyList()
+        val servers = mutableListOf<IceServerConfig>()
+        for (i in 0 until arr.length()) {
+            val item = arr.optJSONObject(i) ?: continue
+            val urls = mutableListOf<String>()
+            when (val raw = item.opt("urls")) {
+                is String -> if (raw.isNotBlank()) urls.add(raw)
+                is JSONArray -> {
+                    for (j in 0 until raw.length()) {
+                        val u = raw.optString(j)
+                        if (u.isNotBlank()) urls.add(u)
+                    }
+                }
+            }
+            if (urls.isEmpty()) continue
+            servers.add(
+                IceServerConfig(
+                    urls = urls,
+                    username = item.optString("username")
+                        .takeIf { it.isNotBlank() && it != "null" },
+                    credential = item.optString("credential")
+                        .takeIf { it.isNotBlank() && it != "null" },
+                ),
+            )
+        }
+        return servers
     }
 
     data class UploadedFile(
@@ -295,6 +535,9 @@ class MonicaApi(private val sessionStore: SessionStore) {
     private fun authPost(path: String, body: okhttp3.RequestBody): JSONObject =
         execute(authRequest(path).post(body).build())
 
+    private fun authPatch(path: String, body: okhttp3.RequestBody): JSONObject =
+        execute(authRequest(path).patch(body).build())
+
     private fun authDelete(path: String): JSONObject {
         val text = executeRaw(authRequest(path).delete().build())
         return if (text.isBlank()) JSONObject() else JSONObject(text)
@@ -365,8 +608,20 @@ class MonicaApi(private val sessionStore: SessionStore) {
     }
 
     private fun apiError(code: Int, text: String): IllegalStateException {
-        val detail = runCatching { JSONObject(text).optString("detail") }.getOrNull()
-        return IllegalStateException(detail?.takeIf { it.isNotBlank() } ?: "Ошибка API ($code)")
+        val message = runCatching {
+            val json = JSONObject(text)
+            json.optString("detail").takeIf { it.isNotBlank() }
+                ?: json.keys().asSequence().firstNotNullOfOrNull { key ->
+                    val value = json.opt(key)
+                    val textValue = when (value) {
+                        is JSONArray -> value.optString(0)
+                        null -> ""
+                        else -> value.toString()
+                    }
+                    textValue.takeIf { it.isNotBlank() }?.let { "$key: $it" }
+                }
+        }.getOrNull()
+        return IllegalStateException(message ?: "Ошибка API ($code)")
     }
 
     companion object {
@@ -380,6 +635,9 @@ class MonicaApi(private val sessionStore: SessionStore) {
             isOnline = json.optBoolean("is_online"),
             lastSeenAt = json.optString("last_seen_at").takeIf { it.isNotBlank() && it != "null" },
             updatedAt = json.optString("updated_at").takeIf { it.isNotBlank() && it != "null" },
+            email = json.optString("email"),
+            city = json.optString("city"),
+            birthDate = json.optString("birth_date").takeIf { it.isNotBlank() && it != "null" },
         )
 
         fun parseMessage(json: JSONObject): MessageItem {
@@ -391,18 +649,46 @@ class MonicaApi(private val sessionStore: SessionStore) {
                     waveformJson.optDouble(it, 0.0).toFloat().coerceIn(0f, 1f)
                 }
             }
+            val attachmentsJson = json.optJSONArray("attachments")
+            val attachments = if (attachmentsJson == null) {
+                emptyList()
+            } else {
+                (0 until attachmentsJson.length()).mapNotNull { idx ->
+                    val item = attachmentsJson.optJSONObject(idx) ?: return@mapNotNull null
+                    MessageAttachment(
+                        path = item.optString("path").takeIf { it.isNotBlank() && it != "null" },
+                        contentUrl = item.optString("content_url")
+                            .takeIf { it.isNotBlank() && it != "null" },
+                        fileName = item.optString("file_name").takeIf { it.isNotBlank() },
+                        mimeType = item.optString("mime_type").takeIf { it.isNotBlank() },
+                        fileSize = if (item.has("file_size") && !item.isNull("file_size")) {
+                            item.getLong("file_size")
+                        } else {
+                            null
+                        },
+                    )
+                }
+            }
+            val firstAttachment = attachments.firstOrNull()
             return MessageItem(
                 id = json.getString("id"),
                 chatId = json.optString("chat").takeIf { it.isNotBlank() },
                 sender = json.optJSONObject("sender")?.let { parseUser(it) },
                 messageType = json.optString("message_type", "text"),
                 content = json.optString("content"),
-                contentUrl = json.optString("content_url").takeIf { it.isNotBlank() },
-                fileName = json.optString("file_name").takeIf { it.isNotBlank() },
-                mimeType = json.optString("mime_type").takeIf { it.isNotBlank() },
+                contentUrl = json.optString("content_url").takeIf { it.isNotBlank() && it != "null" }
+                    ?: firstAttachment?.contentUrl,
+                fileName = json.optString("file_name").takeIf { it.isNotBlank() }
+                    ?: firstAttachment?.fileName,
+                mimeType = json.optString("mime_type").takeIf { it.isNotBlank() }
+                    ?: firstAttachment?.mimeType,
                 fileSize = if (json.has("file_size") && !json.isNull("file_size")) {
                     json.getLong("file_size")
-                } else null,
+                } else {
+                    firstAttachment?.fileSize
+                },
+                caption = json.optString("caption").takeIf { it.isNotBlank() && it != "null" },
+                attachments = attachments,
                 waveform = waveform,
                 voiceDurationMs = if (
                     json.has("voice_duration_ms") && !json.isNull("voice_duration_ms")
@@ -438,6 +724,39 @@ class MonicaApi(private val sessionStore: SessionStore) {
                 payload = payload,
                 createdAt = json.optString("created_at").takeIf { it.isNotBlank() },
             )
+        }
+
+        fun parseCall(json: JSONObject): CallSession {
+            val chatRaw = json.opt("chat")
+            val chatId = when (chatRaw) {
+                is String -> chatRaw.takeIf { it.isNotBlank() && it != "null" }
+                is JSONObject -> chatRaw.optString("id").takeIf { it.isNotBlank() }
+                else -> null
+            }
+            return CallSession(
+                id = json.getString("id"),
+                chatId = chatId,
+                caller = json.optJSONObject("caller")?.let { parseUser(it) },
+                callee = json.optJSONObject("callee")?.let { parseUser(it) },
+                status = json.optString("status"),
+                mediaMode = json.optString("media_mode", "audio")
+                    .takeIf { it == "video" } ?: "audio",
+                clientInstanceId = json.optString("client_instance_id")
+                    .takeIf { it.isNotBlank() && it != "null" },
+                acceptedClientInstanceId = json.optString("accepted_client_instance_id")
+                    .takeIf { it.isNotBlank() && it != "null" },
+                endReason = json.optString("end_reason")
+                    .takeIf { it.isNotBlank() && it != "null" },
+            )
+        }
+
+        fun parseCallEvent(json: JSONObject): Pair<String, CallSession?> {
+            val action = json.optString("action")
+            val callJson = json.optJSONObject("call") ?: json
+            val call = runCatching {
+                if (callJson.has("id")) parseCall(callJson) else null
+            }.getOrNull()
+            return action to call
         }
     }
 }

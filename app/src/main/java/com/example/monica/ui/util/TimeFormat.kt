@@ -75,6 +75,11 @@ object TimeFormat {
         return SimpleDateFormat("HH:mm", Locale("ru")).format(then.time)
     }
 
+    fun searchResultTime(iso: String?): String {
+        val then = parse(iso) ?: return ""
+        return SimpleDateFormat("dd.MM HH:mm", Locale("ru")).format(then.time)
+    }
+
     fun dayLabel(iso: String?): String {
         val then = parse(iso) ?: return ""
         val now = Calendar.getInstance()

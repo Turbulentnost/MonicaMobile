@@ -50,6 +50,10 @@ class PresenceSocket(
     private val _chatPreviews = MutableSharedFlow<org.json.JSONObject>(extraBufferCapacity = 32)
     val chatPreviews: SharedFlow<org.json.JSONObject> = _chatPreviews.asSharedFlow()
 
+    /** События жизненного цикла звонка: call.incoming / accepted / ended … */
+    private val _callEvents = MutableSharedFlow<JSONObject>(extraBufferCapacity = 32)
+    val callEvents: SharedFlow<JSONObject> = _callEvents.asSharedFlow()
+
     private val _connected = MutableStateFlow(false)
     val connected: StateFlow<Boolean> = _connected.asStateFlow()
 
@@ -57,6 +61,8 @@ class PresenceSocket(
         allowReconnect = true
         reconnectJob?.cancel()
         reconnectJob = null
+        // Уже в сети — не рвём сокет (иначе бэкенд сразу шлёт offline).
+        if (socket != null && _connected.value) return
         closeSocketOnly()
         val token = session.accessToken ?: return
         val request = Request.Builder()
@@ -107,6 +113,12 @@ class PresenceSocket(
                         val msg = data.optJSONObject("message") ?: return
                         _chatPreviews.tryEmit(msg)
                     }
+                    else -> {
+                        val action = data.optString("action")
+                        if (action.startsWith("call.")) {
+                            _callEvents.tryEmit(data)
+                        }
+                    }
                 }
             }
 
@@ -128,8 +140,8 @@ class PresenceSocket(
         if (!allowReconnect) return
         if (session.accessToken.isNullOrBlank()) return
         if (reconnectJob?.isActive == true) return
-        if (retry >= 12) return
-        val delayMs = minOf(1000L * (1L shl retry), 10_000L)
+        // Без лимита попыток: фоновый daemon должен переживать обрывы сети.
+        val delayMs = minOf(1000L * (1L shl retry.coerceAtMost(5)), 30_000L)
         retry += 1
         reconnectJob = scope.launch {
             delay(delayMs)

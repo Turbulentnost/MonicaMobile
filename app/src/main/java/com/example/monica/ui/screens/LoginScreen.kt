@@ -13,6 +13,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -29,6 +30,7 @@ import com.example.monica.ui.MonicaViewModel
 fun LoginScreen(
     vm: MonicaViewModel,
     onLoggedIn: () -> Unit,
+    onRegister: () -> Unit,
 ) {
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
@@ -80,6 +82,13 @@ fun LoginScreen(
         ) {
             if (loading) CircularProgressIndicator(modifier = Modifier.height(22.dp), strokeWidth = 2.dp)
             else Text("Войти")
+        }
+        TextButton(
+            onClick = onRegister,
+            enabled = !loading,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Нет аккаунта? Зарегистрироваться")
         }
     }
 }
