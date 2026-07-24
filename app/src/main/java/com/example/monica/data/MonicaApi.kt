@@ -1,11 +1,17 @@
 package com.example.monica.data
 
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.MediaType
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import okio.Buffer
+import okio.BufferedSink
+import okio.ForwardingSink
+import okio.buffer
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
@@ -236,6 +242,25 @@ class MonicaApi(private val sessionStore: SessionStore) {
         )
     }
 
+    fun forwardMessages(
+        targetChatId: String,
+        sourceChatId: String,
+        messageIds: List<String>,
+        comment: String = "",
+    ): MessageItem {
+        require(messageIds.isNotEmpty()) { "Выберите хотя бы одно сообщение" }
+        val ids = JSONArray().apply { messageIds.forEach { put(it) } }
+        val body = JSONObject()
+            .put("source_chat_id", sourceChatId)
+            .put("message_ids", ids)
+            .put("comment", comment)
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        return Companion.parseMessage(
+            authPost("/api/chats/$targetChatId/messages/forward/", body),
+        )
+    }
+
     fun invitePrivate(chatId: String): PrivateSessionInfo {
         val json = authPost("/api/chats/$chatId/private/invite/", "{}".toRequestBody(JSON_MEDIA_TYPE))
         return PrivateSessionInfo(
@@ -381,19 +406,24 @@ class MonicaApi(private val sessionStore: SessionStore) {
         fileName: String,
         bytes: ByteArray,
         mimeType: String,
+        onProgress: (Float) -> Unit = {},
     ): UploadedFile {
         val safeMime = mimeType.ifBlank { "application/octet-stream" }
-        val body = okhttp3.MultipartBody.Builder()
-            .setType(okhttp3.MultipartBody.FORM)
-            .addFormDataPart(
-                "files",
-                fileName,
-                bytes.toRequestBody(safeMime.toMediaType()),
-            )
+        val fileBody = ProgressRequestBody(
+            bytes.toRequestBody(safeMime.toMediaType()),
+        ) { written, total ->
+            if (total > 0L) {
+                onProgress((written.toFloat() / total.toFloat()).coerceIn(0f, 1f))
+            }
+        }
+        val body = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart("files", fileName, fileBody)
             .build()
         val text = executeRaw(
             authRequest("/api/chats/$chatId/messages/upload/").post(body).build(),
         )
+        onProgress(1f)
         val item = org.json.JSONObject(text).getJSONArray("files").getJSONObject(0)
         return UploadedFile(
             path = item.getString("path"),
@@ -403,6 +433,30 @@ class MonicaApi(private val sessionStore: SessionStore) {
             fileSize = item.optLong("file_size", bytes.size.toLong()),
             messageType = item.optString("message_type", "file"),
         )
+    }
+
+    private class ProgressRequestBody(
+        private val delegate: RequestBody,
+        private val onProgress: (bytesWritten: Long, contentLength: Long) -> Unit,
+    ) : RequestBody() {
+        override fun contentType(): MediaType? = delegate.contentType()
+        override fun contentLength(): Long = delegate.contentLength()
+        /** Не даём OkHttp перечитывать тело для content-length — прогресс идёт один раз. */
+        override fun isOneShot(): Boolean = true
+        override fun writeTo(sink: BufferedSink) {
+            val total = contentLength()
+            val counting = object : ForwardingSink(sink) {
+                private var written = 0L
+                override fun write(source: Buffer, byteCount: Long) {
+                    super.write(source, byteCount)
+                    written += byteCount
+                    onProgress(written, total)
+                }
+            }
+            val buffered = counting.buffer()
+            delegate.writeTo(buffered)
+            buffered.flush()
+        }
     }
 
     fun uploadCodeFile(chatId: String, fileName: String, content: String, mimeType: String): UploadedFile {
@@ -473,10 +527,27 @@ class MonicaApi(private val sessionStore: SessionStore) {
         throw IllegalStateException("Не удалось загрузить изображение")
     }
 
-    fun fetchUserAvatarBytes(userId: String): ByteArray =
-        executeBytes(
+    fun fetchUserAvatarBytes(userId: String): ByteArray {
+        // 204 = аватара нет; не считаем это ошибкой.
+        client.newCall(
             authRequest("/api/users/$userId/avatar/").get().build(),
-        )
+        ).execute().use { response ->
+            if (response.code == 204) return ByteArray(0)
+            if (response.code == 404) return ByteArray(0)
+            if (response.code == 401 && sessionStore.refreshToken != null) {
+                if (refreshAccessToken()) {
+                    return executeBytes(
+                        authRequest("/api/users/$userId/avatar/").get().build(),
+                    )
+                }
+            }
+            val bytes = response.body?.bytes() ?: ByteArray(0)
+            if (!response.isSuccessful) {
+                throw apiError(response.code, bytes.toString(Charsets.UTF_8))
+            }
+            return bytes
+        }
+    }
 
 
     fun listNotifications(): List<AppNotification> {
@@ -670,6 +741,14 @@ class MonicaApi(private val sessionStore: SessionStore) {
                 }
             }
             val firstAttachment = attachments.firstOrNull()
+            val forwardBundleJson = json.optJSONArray("forward_bundle")
+            val forwardBundle = if (forwardBundleJson == null) {
+                emptyList()
+            } else {
+                (0 until forwardBundleJson.length()).mapNotNull { idx ->
+                    parseForwardBundleItem(forwardBundleJson.optJSONObject(idx) ?: return@mapNotNull null)
+                }
+            }
             return MessageItem(
                 id = json.getString("id"),
                 chatId = json.optString("chat").takeIf { it.isNotBlank() },
@@ -693,10 +772,78 @@ class MonicaApi(private val sessionStore: SessionStore) {
                 voiceDurationMs = if (
                     json.has("voice_duration_ms") && !json.isNull("voice_duration_ms")
                 ) json.getLong("voice_duration_ms") else null,
+                forwardBundle = forwardBundle,
+                forwardedFromId = when (val raw = json.opt("forwarded_from")) {
+                    is JSONObject -> raw.optString("id").takeIf { it.isNotBlank() }
+                    is String -> raw.takeIf { it.isNotBlank() && it != "null" }
+                    else -> null
+                },
+                replyToSummary = json.optJSONObject("reply_to_summary")?.let { reply ->
+                    ReplySummary(
+                        id = reply.optString("id"),
+                        chatId = reply.optString("chat"),
+                        sender = reply.optJSONObject("sender")?.let { parseUser(it) },
+                        preview = reply.optString("preview"),
+                        messageType = reply.optString("message_type", "text"),
+                    )
+                },
                 sentAt = json.optString("sent_at"),
                 readAt = json.optString("read_at").takeIf { it.isNotBlank() && it != "null" },
                 clientId = json.optString("client_id").takeIf { it.isNotBlank() && it != "null" },
                 clientStatus = null,
+            )
+        }
+
+        private fun parseForwardBundleItem(json: JSONObject): ForwardBundleItem {
+            val attachmentsJson = json.optJSONArray("attachments")
+            val attachments = if (attachmentsJson == null) {
+                emptyList()
+            } else {
+                (0 until attachmentsJson.length()).mapNotNull { idx ->
+                    val item = attachmentsJson.optJSONObject(idx) ?: return@mapNotNull null
+                    MessageAttachment(
+                        path = item.optString("path").takeIf { it.isNotBlank() && it != "null" },
+                        contentUrl = item.optString("content_url")
+                            .takeIf { it.isNotBlank() && it != "null" },
+                        fileName = item.optString("file_name").takeIf { it.isNotBlank() },
+                        mimeType = item.optString("mime_type").takeIf { it.isNotBlank() },
+                        fileSize = if (item.has("file_size") && !item.isNull("file_size")) {
+                            item.optLong("file_size")
+                        } else null,
+                    )
+                }
+            }
+            val waveformJson = json.optJSONArray("waveform")
+            val waveform = if (waveformJson == null) emptyList() else {
+                (0 until waveformJson.length()).map {
+                    waveformJson.optDouble(it, 0.0).toFloat().coerceIn(0f, 1f)
+                }
+            }
+            val firstAttachment = attachments.firstOrNull()
+            return ForwardBundleItem(
+                originalId = json.optString("original_id"),
+                originalChatId = json.optString("original_chat_id")
+                    .ifBlank { json.optString("chat_id") },
+                sender = json.optJSONObject("sender")?.let { parseUser(it) },
+                messageType = json.optString("message_type", "text"),
+                content = json.optString("content"),
+                contentUrl = json.optString("content_url")
+                    .takeIf { it.isNotBlank() && it != "null" }
+                    ?: firstAttachment?.contentUrl,
+                caption = json.optString("caption").takeIf { it.isNotBlank() && it != "null" },
+                fileName = json.optString("file_name").takeIf { it.isNotBlank() }
+                    ?: firstAttachment?.fileName,
+                mimeType = json.optString("mime_type").takeIf { it.isNotBlank() }
+                    ?: firstAttachment?.mimeType,
+                fileSize = if (json.has("file_size") && !json.isNull("file_size")) {
+                    json.optLong("file_size")
+                } else firstAttachment?.fileSize,
+                attachments = attachments,
+                waveform = waveform,
+                voiceDurationMs = if (
+                    json.has("voice_duration_ms") && !json.isNull("voice_duration_ms")
+                ) json.optLong("voice_duration_ms") else null,
+                sentAt = json.optString("sent_at"),
             )
         }
 

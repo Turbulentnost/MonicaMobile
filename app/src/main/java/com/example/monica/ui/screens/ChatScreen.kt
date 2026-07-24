@@ -12,6 +12,11 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -23,10 +28,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -36,6 +43,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
@@ -47,7 +57,10 @@ import androidx.compose.material.icons.outlined.DoneAll
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.InsertDriveFile
 import androidx.compose.material.icons.outlined.InsertEmoticon
+import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.RadioButtonUnchecked
+import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenuItem
@@ -79,15 +92,24 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.monica.R
@@ -100,8 +122,12 @@ import com.example.monica.ui.components.AppIcon
 import com.example.monica.ui.components.CachedMediaImage
 import com.example.monica.ui.components.CodeViewerView
 import com.example.monica.ui.components.EmojiPicker
+import com.example.monica.ui.components.ForwardedBundleView
+import com.example.monica.ui.components.ForwardPickerSheet
+import com.example.monica.ui.components.LinkAwareText
+import com.example.monica.ui.components.MessageSelectionToolbar
 import com.example.monica.ui.components.MonicaAppBar
-import com.example.monica.ui.components.MonacoEditorView
+import com.example.monica.ui.components.UploadProgressOverlay
 import com.example.monica.ui.components.UserAvatar
 import com.example.monica.ui.components.VoiceMessagePlayer
 import com.example.monica.ui.components.VoiceRecorderController
@@ -112,6 +138,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlin.math.abs
 import java.io.File
 
 private data class CodeChrome(
@@ -187,8 +216,14 @@ fun ChatScreen(
     val loading by vm.loading.collectAsStateWithLifecycle()
     val darkTheme by vm.darkTheme.collectAsStateWithLifecycle()
     val callState by vm.callState.collectAsStateWithLifecycle()
+    val selectedMessageIds by vm.selectedMessageIds.collectAsStateWithLifecycle()
+    val pendingForward by vm.pendingForward.collectAsStateWithLifecycle()
+    val replyTo by vm.replyTo.collectAsStateWithLifecycle()
+    val forwardBusy by vm.forwardBusy.collectAsStateWithLifecycle()
+    val forwardSearchResults by vm.searchResults.collectAsStateWithLifecycle()
     val myId = vm.session.userId
     val context = LocalContext.current
+    val activePendingForward = pendingForward?.takeIf { it.targetChatId == chatId }
 
     val chat = chats.find { it.id == chatId }
     val partner = chat?.partner
@@ -199,7 +234,9 @@ fun ChatScreen(
     val isOutgoingPending = outgoingPending.containsKey(chatId)
     val isPrivateActiveHere = privateSessionId != null && privateChatId == chatId
     val callBusy = callState.status !in listOf(CallUiStatus.Idle, CallUiStatus.Ended)
-    val canStartCall = isOnline && !callBusy && partner != null
+    // Presence выключается, когда приложение собеседника свёрнуто, но
+    // входящий звонок всё равно доставляется через FCM и фоновый демон.
+    val canStartCall = !callBusy && partner != null
     val canStartVideo = canStartCall && vm.hasCameraDevice()
     val downloadChatFile = rememberChatFileDownloader(vm.api)
 
@@ -250,6 +287,8 @@ fun ChatScreen(
     }
 
     var input by remember { mutableStateOf("") }
+    var forwardPickerVisible by remember { mutableStateOf(false) }
+    var forwardQuery by remember { mutableStateOf("") }
     var codeMode by remember { mutableStateOf(false) }
     var codeLanguage by remember { mutableStateOf("python") }
     var codeFileName by remember { mutableStateOf("script.py") }
@@ -258,6 +297,10 @@ fun ChatScreen(
     val scrollToBottomTick by vm.scrollChatToBottom.collectAsStateWithLifecycle()
     val pendingScrollToMessageId by vm.pendingScrollToMessageId.collectAsStateWithLifecycle()
     val highlightedMessageId by vm.highlightedMessageId.collectAsStateWithLifecycle()
+
+    LaunchedEffect(activePendingForward?.targetChatId) {
+        if (activePendingForward != null) input = ""
+    }
 
     DisposableEffect(chatId) {
         vm.openChat(chatId)
@@ -337,7 +380,7 @@ fun ChatScreen(
                         UserAvatar(partner, size = 30.dp, showOnline = true, isOnline = isOnline)
                         Column(verticalArrangement = Arrangement.Center) {
                             Text(
-                                "@${partner?.nickname ?: "—"}",
+                                partner?.displayName ?: "—",
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.SemiBold,
                                 maxLines = 1,
@@ -424,6 +467,14 @@ fun ChatScreen(
                             vm = vm,
                             darkTheme = darkTheme,
                             highlighted = highlightedMessageId == msg.id,
+                            selectionMode = selectedMessageIds.isNotEmpty(),
+                            selected = msg.id in selectedMessageIds,
+                            onToggleSelection = { vm.toggleMessageSelection(msg) },
+                            onLongPress = { vm.enterMessageSelection(msg) },
+                            onSwipeReply = { vm.beginReply(msg) },
+                            onOpenOriginal = { originalChatId, originalMessageId ->
+                                vm.openOriginalMessage(originalChatId, originalMessageId)
+                            },
                             onDownloadFile = downloadChatFile,
                         )
                     }
@@ -432,14 +483,21 @@ fun ChatScreen(
 
             if (partnerTyping) {
                 Text(
-                    "@${partner?.nickname} печатает…",
+                    "${partner?.displayName ?: "Собеседник"} печатает…",
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
 
-            if (codeMode) {
+            if (selectedMessageIds.isNotEmpty()) {
+                MessageSelectionToolbar(
+                    count = selectedMessageIds.size,
+                    onClose = vm::clearMessageSelection,
+                    onReply = vm::replyToSelectedMessage,
+                    onForward = { forwardPickerVisible = true },
+                )
+            } else if (codeMode) {
                 CodeComposer(
                     language = codeLanguage,
                     onLanguageChange = { codeLanguage = it },
@@ -459,10 +517,22 @@ fun ChatScreen(
                         input = it
                         vm.onComposerChange(it)
                     },
-                    loading = loading,
-                    onSendText = {
-                        vm.sendMessage(input)
+                    loading = loading || forwardBusy,
+                    forwardingMode = activePendingForward != null,
+                    forwardPreview = activePendingForward?.preview,
+                    replyPreview = replyTo,
+                    onCancelForward = {
+                        vm.cancelPendingForward()
                         input = ""
+                    },
+                    onCancelReply = vm::cancelReply,
+                    onSendText = {
+                        if (activePendingForward != null) {
+                            vm.completePendingForward(input) { input = "" }
+                        } else {
+                            vm.sendMessage(input)
+                            input = ""
+                        }
                     },
                     onOpenCode = {
                         codeMode = true
@@ -495,6 +565,33 @@ fun ChatScreen(
             }
         }
     }
+
+    if (forwardPickerVisible) {
+        ForwardPickerSheet(
+            chats = chats,
+            searchResults = forwardSearchResults,
+            query = forwardQuery,
+            busy = forwardBusy,
+            onQueryChange = {
+                forwardQuery = it
+                vm.searchUsers(it)
+            },
+            onSelectChat = { targetChatId ->
+                forwardPickerVisible = false
+                forwardQuery = ""
+                vm.prepareForwardToChat(targetChatId)
+            },
+            onSelectUser = { userId ->
+                forwardPickerVisible = false
+                forwardQuery = ""
+                vm.prepareForwardToUser(userId)
+            },
+            onDismiss = {
+                forwardPickerVisible = false
+                forwardQuery = ""
+            },
+        )
+    }
 }
 
 @Composable
@@ -502,6 +599,11 @@ private fun MessageComposer(
     text: String,
     onTextChange: (String) -> Unit,
     loading: Boolean,
+    forwardingMode: Boolean = false,
+    forwardPreview: MessageItem? = null,
+    replyPreview: MessageItem? = null,
+    onCancelForward: () -> Unit = {},
+    onCancelReply: () -> Unit = {},
     onSendText: () -> Unit,
     onOpenCode: () -> Unit,
     onSendFile: (name: String, bytes: ByteArray, mime: String) -> Unit,
@@ -600,6 +702,46 @@ private fun MessageComposer(
             .padding(horizontal = 8.dp, vertical = 8.dp),
         horizontalAlignment = Alignment.End,
     ) {
+        val quotePreview = forwardPreview ?: replyPreview
+        if (quotePreview != null) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 6.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                shape = RoundedCornerShape(16.dp),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            if (forwardingMode) {
+                                "Пересылка от ${quotePreview.sender?.displayName.orEmpty()}"
+                            } else {
+                                "Ответ для ${quotePreview.sender?.displayName.orEmpty()}"
+                            },
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.SemiBold,
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                        Text(
+                            messagePreviewText(quotePreview),
+                            maxLines = 2,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    IconButton(
+                        onClick = if (forwardingMode) onCancelForward else onCancelReply,
+                        modifier = Modifier.size(34.dp),
+                    ) {
+                        Icon(Icons.Outlined.Close, contentDescription = "Отменить")
+                    }
+                }
+            }
+        }
         AnimatedVisibility(visible = emojiPickerVisible && !recording) {
             EmojiPicker(
                 onSelect = { emoji -> onTextChange(text + emoji) },
@@ -693,7 +835,7 @@ private fun MessageComposer(
             ) {
                 IconButton(
                     onClick = { attachmentLauncher.launch("*/*") },
-                    enabled = !loading && !recording,
+                    enabled = !loading && !recording && quotePreview == null,
                     modifier = Modifier.size(44.dp),
                 ) {
                     AppIcon(
@@ -711,7 +853,15 @@ private fun MessageComposer(
                         .weight(1f)
                         .heightIn(min = 48.dp, max = 92.dp),
                     enabled = !recording,
-                    placeholder = { Text("Сообщение") },
+                    placeholder = {
+                        Text(
+                            when {
+                                forwardingMode -> "Добавить комментарий…"
+                                replyPreview != null -> "Напишите ответ…"
+                                else -> "Сообщение"
+                            },
+                        )
+                    },
                     minLines = 1,
                     maxLines = 3,
                     shape = RoundedCornerShape(22.dp),
@@ -733,7 +883,7 @@ private fun MessageComposer(
 
                 IconButton(
                     onClick = { emojiPickerVisible = !emojiPickerVisible },
-                    enabled = !loading && !recording,
+                    enabled = !loading && !recording && quotePreview == null,
                     modifier = Modifier.size(44.dp),
                 ) {
                     Icon(
@@ -753,7 +903,7 @@ private fun MessageComposer(
                         emojiPickerVisible = false
                         onOpenCode()
                     },
-                    enabled = !loading && !recording,
+                    enabled = !loading && !recording && quotePreview == null,
                     modifier = Modifier.size(44.dp),
                 ) {
                     AppIcon(
@@ -764,7 +914,7 @@ private fun MessageComposer(
                     )
                 }
 
-                if (text.isNotBlank()) {
+                if (text.isNotBlank() || forwardingMode) {
                     IconButton(
                         onClick = onSendText,
                         enabled = !loading,
@@ -772,7 +922,7 @@ private fun MessageComposer(
                     ) {
                         Icon(
                             Icons.AutoMirrored.Filled.Send,
-                            contentDescription = "Отправить",
+                            contentDescription = if (forwardingMode) "Переслать" else "Отправить",
                             tint = MaterialTheme.colorScheme.primary,
                         )
                     }
@@ -852,6 +1002,27 @@ private fun CodeComposer(
     var langExpanded by remember { mutableStateOf(false) }
     val langLabel = if (language == "javascript") "JavaScript" else "Python"
     val chrome = remember(darkTheme) { codeChrome(darkTheme) }
+    val tabSize = if (language == "javascript") 2 else 4
+    val focusRequester = remember { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
+    val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+    val editorHeight = if (imeVisible) 132.dp else 180.dp
+    var fieldValue by remember {
+        mutableStateOf(TextFieldValue(text = code, selection = TextRange(code.length)))
+    }
+    var lastSpaceAt by remember { mutableLongStateOf(0L) }
+
+    LaunchedEffect(code) {
+        if (code != fieldValue.text) {
+            fieldValue = TextFieldValue(text = code, selection = TextRange(code.length))
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        delay(80)
+        focusRequester.requestFocus()
+        keyboard?.show()
+    }
 
     Column(
         modifier = Modifier
@@ -859,73 +1030,109 @@ private fun CodeComposer(
             .background(chrome.bg)
             .padding(12.dp),
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            ExposedDropdownMenuBox(
-                expanded = langExpanded,
-                onExpandedChange = { langExpanded = it },
-                modifier = Modifier.width(140.dp),
+        if (!imeVisible) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                ExposedDropdownMenuBox(
+                    expanded = langExpanded,
+                    onExpandedChange = { langExpanded = it },
+                    modifier = Modifier.width(140.dp),
+                ) {
+                    OutlinedTextField(
+                        value = langLabel,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Язык") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = langExpanded) },
+                        modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable),
+                        singleLine = true,
+                    )
+                    ExposedDropdownMenu(
+                        expanded = langExpanded,
+                        onDismissRequest = { langExpanded = false },
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Python") },
+                            onClick = {
+                                onLanguageChange("python")
+                                langExpanded = false
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("JavaScript") },
+                            onClick = {
+                                onLanguageChange("javascript")
+                                langExpanded = false
+                            },
+                        )
+                    }
+                }
                 OutlinedTextField(
-                    value = langLabel,
-                    onValueChange = {},
-                    readOnly = true,
-                    label = { Text("Язык") },
-                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = langExpanded) },
-                    modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable),
+                    value = fileName,
+                    onValueChange = onFileNameChange,
+                    modifier = Modifier.weight(1f),
+                    label = { Text("Имя файла") },
                     singleLine = true,
                 )
-                ExposedDropdownMenu(
-                    expanded = langExpanded,
-                    onDismissRequest = { langExpanded = false },
-                ) {
-                    DropdownMenuItem(
-                        text = { Text("Python") },
-                        onClick = {
-                            onLanguageChange("python")
-                            langExpanded = false
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("JavaScript") },
-                        onClick = {
-                            onLanguageChange("javascript")
-                            langExpanded = false
-                        },
-                    )
-                }
             }
-            OutlinedTextField(
-                value = fileName,
-                onValueChange = onFileNameChange,
-                modifier = Modifier.weight(1f),
-                label = { Text("Имя файла") },
-                singleLine = true,
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                "Двойной пробел — отступ · отправить кнопкой ниже",
+                color = chrome.muted,
+                style = MaterialTheme.typography.labelSmall,
             )
+            Spacer(modifier = Modifier.height(6.dp))
         }
-        Spacer(Modifier.height(6.dp))
-        Text(
-            "Двойной пробел — отступ · отправить кнопкой ниже",
-            color = chrome.muted,
-            style = MaterialTheme.typography.labelSmall,
-        )
-        Spacer(Modifier.height(6.dp))
-        MonacoEditorView(
-            value = code,
-            language = language,
-            darkTheme = darkTheme,
-            onValueChange = onCodeChange,
-            onSubmit = onSend,
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 140.dp, max = 240.dp)
-                .height(180.dp)
-                .clip(RoundedCornerShape(8.dp)),
-        )
-        Spacer(Modifier.height(8.dp))
+                .height(editorHeight)
+                .clip(RoundedCornerShape(8.dp))
+                .background(if (darkTheme) Color(0xFF252526) else Color(0xFFF3F3F3))
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+        ) {
+            if (fieldValue.text.isEmpty()) {
+                Text(
+                    "Введите код…",
+                    color = chrome.muted,
+                    style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                )
+            }
+            BasicTextField(
+                value = fieldValue,
+                onValueChange = { next ->
+                    val processed = applyDoubleSpaceIndent(
+                        previous = fieldValue,
+                        next = next,
+                        tabSize = tabSize,
+                        lastSpaceAt = lastSpaceAt,
+                        onSpaceTyped = { lastSpaceAt = it },
+                    )
+                    fieldValue = processed
+                    onCodeChange(processed.text)
+                },
+                modifier = Modifier
+                    .fillMaxSize()
+                    .focusRequester(focusRequester),
+                textStyle = TextStyle(
+                    color = chrome.fg,
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp,
+                    fontFamily = FontFamily.Monospace,
+                ),
+                cursorBrush = SolidColor(chrome.accent),
+                keyboardOptions = KeyboardOptions(
+                    capitalization = KeyboardCapitalization.None,
+                    autoCorrectEnabled = false,
+                    keyboardType = KeyboardType.Ascii,
+                    imeAction = ImeAction.Default,
+                ),
+            )
+        }
+        Spacer(modifier = Modifier.height(8.dp))
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.End,
@@ -934,7 +1141,7 @@ private fun CodeComposer(
             TextButton(onClick = onCancel) {
                 Text("Отмена", color = chrome.fg)
             }
-            Spacer(Modifier.width(8.dp))
+            Spacer(modifier = Modifier.width(8.dp))
             Button(
                 onClick = onSend,
                 enabled = code.isNotBlank() && fileName.isNotBlank() && !loading,
@@ -943,6 +1150,39 @@ private fun CodeComposer(
             }
         }
     }
+}
+
+/** Двойной пробел подряд → отступ (вместо Tab на мобильной клавиатуре). */
+private fun applyDoubleSpaceIndent(
+    previous: TextFieldValue,
+    next: TextFieldValue,
+    tabSize: Int,
+    lastSpaceAt: Long,
+    onSpaceTyped: (Long) -> Unit,
+): TextFieldValue {
+    if (next.text.length != previous.text.length + 1) {
+        onSpaceTyped(0L)
+        return next
+    }
+    val cursor = next.selection.start
+    if (cursor <= 0 || next.text.getOrNull(cursor - 1) != ' ') {
+        onSpaceTyped(0L)
+        return next
+    }
+    val now = System.currentTimeMillis()
+    if (lastSpaceAt > 0L && now - lastSpaceAt < 400L && cursor >= 2 &&
+        next.text.getOrNull(cursor - 2) == ' '
+    ) {
+        val indent = " ".repeat(tabSize.coerceAtLeast(2))
+        val before = next.text.substring(0, cursor - 2)
+        val after = next.text.substring(cursor)
+        val text = before + indent + after
+        val sel = before.length + indent.length
+        onSpaceTyped(0L)
+        return TextFieldValue(text = text, selection = TextRange(sel))
+    }
+    onSpaceTyped(now)
+    return next
 }
 
 @Composable
@@ -1009,10 +1249,10 @@ private fun PrivateChatActionButton(
                 onClick = onInvite,
                 modifier = Modifier.size(40.dp),
             ) {
-                AppIcon(
-                    resId = R.drawable.ic_private_message,
-                    contentDescription = "Пригласить в приватный чат",
-                    size = 32.dp,
+                Icon(
+                    imageVector = Icons.Outlined.Lock,
+                    contentDescription = "Открыть секретный чат",
+                    modifier = Modifier.size(25.dp),
                     tint = MaterialTheme.colorScheme.onSurface,
                 )
             }
@@ -1053,6 +1293,14 @@ private fun codeLanguageOf(message: MessageItem): String? {
     }
 }
 
+private fun messagePreviewText(message: MessageItem): String = when (message.messageType) {
+    "photo" -> message.caption ?: "Фотография"
+    "voice" -> "Голосовое сообщение"
+    "file" -> message.fileName ?: "Файл"
+    "forward" -> message.content.ifBlank { "Пересланные сообщения" }
+    else -> message.content
+}
+
 /** Индекс сообщения в LazyColumn с учётом day-разделителей. */
 private fun messageListIndex(messages: List<MessageItem>, messageId: String): Int {
     var index = 0
@@ -1074,6 +1322,12 @@ private fun MessageBubble(
     vm: MonicaViewModel,
     darkTheme: Boolean,
     highlighted: Boolean = false,
+    selectionMode: Boolean,
+    selected: Boolean,
+    onToggleSelection: () -> Unit,
+    onLongPress: () -> Unit,
+    onSwipeReply: () -> Unit,
+    onOpenOriginal: (chatId: String, messageId: String) -> Unit,
     onDownloadFile: (path: String?, url: String?, name: String, mime: String?) -> Unit,
 ) {
     if (message.messageType == "call") {
@@ -1119,7 +1373,9 @@ private fun MessageBubble(
     val delivery = message.deliveryStatus(isOwn)
     val bubbleAlpha = if (delivery == DeliveryStatus.Sending) 0.72f else 1f
     val highlightColor by animateColorAsState(
-        targetValue = if (highlighted) {
+        targetValue = if (selected) {
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.20f)
+        } else if (highlighted) {
             MaterialTheme.colorScheme.tertiary.copy(alpha = 0.35f)
         } else {
             Color.Transparent
@@ -1127,13 +1383,32 @@ private fun MessageBubble(
         label = "messageHighlight",
     )
 
-    Column(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
+            .animateContentSize()
             .background(highlightColor, RoundedCornerShape(18.dp))
-            .padding(vertical = 2.dp),
-        horizontalAlignment = if (isOwn) Alignment.End else Alignment.Start,
+            .messageForwardGestures(
+                isOwn = isOwn,
+                selectionMode = selectionMode,
+                onTap = onToggleSelection,
+                onLongPress = onLongPress,
+                onSwipeReply = onSwipeReply,
+            )
+            .padding(vertical = 2.dp, horizontal = 2.dp),
+        horizontalArrangement = if (isOwn) Arrangement.End else Arrangement.Start,
+        verticalAlignment = Alignment.CenterVertically,
     ) {
+        AnimatedVisibility(
+            visible = selectionMode && !isOwn,
+            enter = fadeIn() + expandHorizontally(expandFrom = Alignment.Start),
+            exit = fadeOut() + shrinkHorizontally(shrinkTowards = Alignment.Start),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                MessageSelectionCircle(selected = selected, onClick = onToggleSelection)
+                Spacer(Modifier.width(6.dp))
+            }
+        }
         Column(
             modifier = Modifier
                 .then(if (codeLang != null) Modifier.fillMaxWidth(0.95f) else Modifier)
@@ -1143,11 +1418,43 @@ private fun MessageBubble(
                 .padding(10.dp),
         ) {
             Text(
-                "@${message.sender?.nickname ?: ""}",
+                message.sender?.displayName.orEmpty(),
                 style = MaterialTheme.typography.labelSmall,
                 color = fg.copy(alpha = 0.8f),
             )
             Spacer(Modifier.height(4.dp))
+            message.replyToSummary?.let { reply ->
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            if (reply.chatId.isNotBlank() && reply.id.isNotBlank()) {
+                                onOpenOriginal(reply.chatId, reply.id)
+                            }
+                        },
+                    color = fg.copy(alpha = 0.10f),
+                    shape = RoundedCornerShape(9.dp),
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
+                    ) {
+                        Text(
+                            "Ответ для ${reply.sender?.displayName.orEmpty()}",
+                            color = fg,
+                            fontWeight = FontWeight.SemiBold,
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                        Text(
+                            reply.preview,
+                            color = fg.copy(alpha = 0.78f),
+                            maxLines = 2,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+            }
             when {
                 message.messageType == "photo" -> {
                     CachedMediaImage(
@@ -1190,7 +1497,20 @@ private fun MessageBubble(
                         onDownloadFile = onDownloadFile,
                     )
                 }
-                else -> Text(message.content, color = fg)
+                message.messageType == "forward" -> {
+                    ForwardedBundleView(
+                        bundle = message.forwardBundle,
+                        comment = message.content,
+                        api = vm.api,
+                        foreground = fg,
+                        onOpenOriginal = onOpenOriginal,
+                    )
+                }
+                else -> LinkAwareText(
+                    text = message.content,
+                    color = fg,
+                    linkColor = if (isOwn) Color(0xFFDCEBFF) else Color(0xFF3B82F6),
+                )
             }
             Spacer(Modifier.height(4.dp))
             Row(
@@ -1212,6 +1532,92 @@ private fun MessageBubble(
                         },
                     )
                 }
+            }
+        }
+        AnimatedVisibility(
+            visible = selectionMode && isOwn,
+            enter = fadeIn() + expandHorizontally(expandFrom = Alignment.End),
+            exit = fadeOut() + shrinkHorizontally(shrinkTowards = Alignment.End),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Spacer(Modifier.width(6.dp))
+                MessageSelectionCircle(selected = selected, onClick = onToggleSelection)
+            }
+        }
+    }
+}
+
+@Composable
+private fun MessageSelectionCircle(
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    IconButton(
+        onClick = onClick,
+        modifier = Modifier.size(34.dp),
+    ) {
+        Icon(
+            imageVector = if (selected) {
+                Icons.Outlined.CheckCircle
+            } else {
+                Icons.Outlined.RadioButtonUnchecked
+            },
+            contentDescription = if (selected) "Снять выбор" else "Выбрать",
+            tint = if (selected) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            modifier = Modifier.size(24.dp),
+        )
+    }
+}
+
+private fun Modifier.messageForwardGestures(
+    isOwn: Boolean,
+    selectionMode: Boolean,
+    onTap: () -> Unit,
+    onLongPress: () -> Unit,
+    onSwipeReply: () -> Unit,
+): Modifier = pointerInput(isOwn, selectionMode) {
+    val swipeThreshold = 76.dp.toPx()
+    val moveTolerance = 14.dp.toPx()
+    coroutineScope {
+        val gestureScope = this
+        awaitEachGesture {
+            // Ссылки в тексте сами обрабатывают long-press (копирование).
+            val down = awaitFirstDown(requireUnconsumed = true)
+            var latestX = down.position.x
+            var moved = false
+            var longPressed = false
+            val longPressJob = gestureScope.launch {
+                delay(500)
+                if (!moved) {
+                    longPressed = true
+                    onLongPress()
+                }
+            }
+            var pressed = true
+            while (pressed) {
+                val event = awaitPointerEvent()
+                val change = event.changes.firstOrNull { it.id == down.id }
+                    ?: event.changes.firstOrNull()
+                if (change != null) {
+                    latestX = change.position.x
+                    if (abs(latestX - down.position.x) > moveTolerance) {
+                        moved = true
+                        longPressJob.cancel()
+                    }
+                }
+                pressed = event.changes.any { it.pressed }
+            }
+            longPressJob.cancel()
+            if (longPressed) return@awaitEachGesture
+            val delta = latestX - down.position.x
+            val validSwipe = if (isOwn) delta <= -swipeThreshold else delta >= swipeThreshold
+            when {
+                validSwipe -> onSwipeReply()
+                !moved && selectionMode -> onTap()
             }
         }
     }
@@ -1266,39 +1672,68 @@ private fun FileMessageBody(
     onDownloadFile: (path: String?, url: String?, name: String, mime: String?) -> Unit,
 ) {
     val name = message.fileName ?: "Файл"
+    val uploading = message.isUploading
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable {
-                onDownloadFile(
-                    message.content.takeIf { it.isNotBlank() },
-                    message.contentUrl,
-                    name,
-                    message.mimeType,
-                )
-            },
+            .then(
+                if (uploading) Modifier else Modifier.clickable {
+                    onDownloadFile(
+                        message.content.takeIf { it.isNotBlank() },
+                        message.contentUrl,
+                        name,
+                        message.mimeType,
+                    )
+                },
+            ),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Icon(
-            Icons.Outlined.InsertDriveFile,
-            contentDescription = null,
-            tint = fg,
-            modifier = Modifier.size(22.dp),
-        )
-        Text(
-            name,
-            color = fg,
-            fontWeight = FontWeight.Medium,
-            modifier = Modifier.weight(1f),
-            maxLines = 2,
-        )
-        Icon(
-            Icons.Outlined.Download,
-            contentDescription = "Скачать",
-            tint = fg.copy(alpha = 0.9f),
-            modifier = Modifier.size(22.dp),
-        )
+        Box(
+            modifier = Modifier.size(40.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Outlined.InsertDriveFile,
+                contentDescription = null,
+                tint = fg,
+                modifier = Modifier.size(22.dp),
+            )
+            if (uploading) {
+                UploadProgressOverlay(
+                    progress = message.uploadProgress,
+                    dim = false,
+                    color = fg,
+                    trackColor = fg.copy(alpha = 0.25f),
+                    indicatorSize = 34.dp,
+                    modifier = Modifier.size(40.dp),
+                )
+            }
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                name,
+                color = fg,
+                fontWeight = FontWeight.Medium,
+                maxLines = 2,
+            )
+            if (uploading) {
+                val pct = ((message.uploadProgress ?: 0f) * 100).toInt().coerceIn(0, 100)
+                Text(
+                    if (pct <= 0) "Загрузка…" else "Загрузка $pct%",
+                    color = fg.copy(alpha = 0.75f),
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
+        }
+        if (!uploading) {
+            Icon(
+                Icons.Outlined.Download,
+                contentDescription = "Скачать",
+                tint = fg.copy(alpha = 0.9f),
+                modifier = Modifier.size(22.dp),
+            )
+        }
     }
 }
 

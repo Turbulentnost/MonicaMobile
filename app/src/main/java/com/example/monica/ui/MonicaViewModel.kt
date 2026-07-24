@@ -10,9 +10,12 @@ import com.example.monica.data.AvatarCache
 import com.example.monica.data.CallUiState
 import com.example.monica.data.CallUiStatus
 import com.example.monica.data.ChatSummary
+import com.example.monica.data.MediaImageCache
 import com.example.monica.data.MessageItem
 import com.example.monica.data.MonicaApi
+import com.example.monica.data.PendingForward
 import com.example.monica.data.PrivateNavTarget
+import com.example.monica.data.ReplySummary
 import com.example.monica.data.SessionStore
 import com.example.monica.data.UserProfile
 import com.example.monica.data.call.CallController
@@ -67,6 +70,18 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _messages = MutableStateFlow<List<MessageItem>>(emptyList())
     val messages: StateFlow<List<MessageItem>> = _messages.asStateFlow()
+
+    private val _selectedMessageIds = MutableStateFlow<Set<String>>(emptySet())
+    val selectedMessageIds: StateFlow<Set<String>> = _selectedMessageIds.asStateFlow()
+
+    private val _pendingForward = MutableStateFlow<PendingForward?>(null)
+    val pendingForward: StateFlow<PendingForward?> = _pendingForward.asStateFlow()
+
+    private val _replyTo = MutableStateFlow<MessageItem?>(null)
+    val replyTo: StateFlow<MessageItem?> = _replyTo.asStateFlow()
+
+    private val _forwardBusy = MutableStateFlow(false)
+    val forwardBusy: StateFlow<Boolean> = _forwardBusy.asStateFlow()
 
     private val _notifications = MutableStateFlow<List<AppNotification>>(emptyList())
     val notifications: StateFlow<List<AppNotification>> = _notifications.asStateFlow()
@@ -554,6 +569,7 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
     fun toggleCallMute() = callController.toggleMute()
     fun cycleCallAudioRoute() = callController.cycleAudioRoute()
     fun toggleCallCamera() = callController.toggleCamera()
+    fun switchCallCamera() = callController.switchCamera()
     fun upgradeCallToVideo() = callController.upgradeToVideo()
     fun hasCameraDevice(): Boolean = callController.hasCameraDevice()
 
@@ -675,24 +691,162 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
         if (chatId.isBlank()) return
         // Повторный вход в тот же чат (например после экрана деталей) — не сбрасываем историю.
         if (currentChatId == chatId) {
+            com.example.monica.data.AppVisibility.setOpenChatId(chatId)
             chatSocket.connect(chatId)
             if (_messages.value.isEmpty()) {
                 openChatJob?.cancel()
                 openChatJob = viewModelScope.launch {
-                    refreshOpenChatMessages(chatId)
+                    refreshOpenChatMessages(chatId, _pendingScrollToMessageId.value)
                 }
             }
             return
         }
         openChatJob?.cancel()
         currentChatId = chatId
+        com.example.monica.data.AppVisibility.setOpenChatId(chatId)
         _partnerTyping.value = false
         _messages.value = emptyList()
         _pendingScrollToMessageId.value = null
         _highlightedMessageId.value = null
         chatSocket.connect(chatId)
         openChatJob = viewModelScope.launch {
-            refreshOpenChatMessages(chatId)
+            refreshOpenChatMessages(chatId, _pendingScrollToMessageId.value)
+        }
+    }
+
+    fun openOriginalMessage(chatId: String, messageId: String) {
+        if (chatId.isBlank() || messageId.isBlank()) return
+        _pendingScrollToMessageId.value = messageId
+        _highlightedMessageId.value = messageId
+        _pendingChatNav.value = chatId
+        refreshChats()
+        viewModelScope.launch {
+            delay(2_200)
+            if (_highlightedMessageId.value == messageId) {
+                _highlightedMessageId.value = null
+            }
+        }
+    }
+
+    fun enterMessageSelection(message: MessageItem) {
+        if (!messageCanBeSelected(message)) return
+        _replyTo.value = null
+        _pendingForward.value = null
+        _selectedMessageIds.value = setOf(message.id)
+    }
+
+    fun selectSingleForForward(message: MessageItem) {
+        enterMessageSelection(message)
+    }
+
+    fun toggleMessageSelection(message: MessageItem) {
+        if (!messageCanBeSelected(message)) return
+        _selectedMessageIds.update { current ->
+            if (message.id in current) current - message.id else current + message.id
+        }
+    }
+
+    fun clearMessageSelection() {
+        _selectedMessageIds.value = emptySet()
+    }
+
+    fun cancelPendingForward() {
+        _pendingForward.value = null
+    }
+
+    fun beginReply(message: MessageItem) {
+        if (!messageCanBeSelected(message)) return
+        _pendingForward.value = null
+        _replyTo.value = message
+        clearMessageSelection()
+    }
+
+    fun replyToSelectedMessage() {
+        val id = _selectedMessageIds.value.singleOrNull() ?: return
+        val message = _messages.value.firstOrNull { it.id == id } ?: return
+        beginReply(message)
+    }
+
+    fun cancelReply() {
+        _replyTo.value = null
+    }
+
+    private fun messageCanBeSelected(message: MessageItem): Boolean =
+        !message.isPending && message.messageType != "call"
+
+    fun prepareForwardToChat(targetChatId: String) {
+        val sourceChatId = currentChatId ?: return
+        val selected = _messages.value.filter { it.id in _selectedMessageIds.value }
+        if (selected.isEmpty() || _forwardBusy.value) return
+        _replyTo.value = null
+        val ids = selected.map { it.id }
+        if (ids.size == 1) {
+            _pendingForward.value = PendingForward(
+                sourceChatId = sourceChatId,
+                targetChatId = targetChatId,
+                messageIds = ids,
+                preview = selected.first(),
+            )
+            clearMessageSelection()
+            openChatFromNotification(targetChatId)
+            return
+        }
+        _forwardBusy.value = true
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    api.forwardMessages(targetChatId, sourceChatId, ids)
+                }
+                clearMessageSelection()
+                openChatFromNotification(targetChatId)
+                refreshChats()
+            } catch (e: Exception) {
+                _error.value = e.message ?: "Не удалось переслать сообщения"
+            } finally {
+                _forwardBusy.value = false
+            }
+        }
+    }
+
+    fun prepareForwardToUser(userId: String) {
+        if (_forwardBusy.value) return
+        _forwardBusy.value = true
+        viewModelScope.launch {
+            try {
+                val target = withContext(Dispatchers.IO) { api.startChat(userId) }
+                _forwardBusy.value = false
+                refreshChats()
+                prepareForwardToChat(target.id)
+            } catch (e: Exception) {
+                _error.value = e.message ?: "Не удалось открыть чат"
+                _forwardBusy.value = false
+            }
+        }
+    }
+
+    fun completePendingForward(comment: String, onSuccess: () -> Unit = {}) {
+        val pending = _pendingForward.value ?: return
+        if (_forwardBusy.value) return
+        _forwardBusy.value = true
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    api.forwardMessages(
+                        targetChatId = pending.targetChatId,
+                        sourceChatId = pending.sourceChatId,
+                        messageIds = pending.messageIds,
+                        comment = comment.trim(),
+                    )
+                }
+                _pendingForward.value = null
+                refreshOpenChatMessages(pending.targetChatId)
+                refreshChats()
+                onSuccess()
+            } catch (e: Exception) {
+                _error.value = e.message ?: "Не удалось переслать сообщение"
+            } finally {
+                _forwardBusy.value = false
+            }
         }
     }
 
@@ -727,9 +881,11 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
         _pendingScrollToMessageId.value = null
     }
 
-    private suspend fun refreshOpenChatMessages(chatId: String) {
+    private suspend fun refreshOpenChatMessages(chatId: String, around: String? = null) {
         try {
-            val msgs = withContext(Dispatchers.IO) { api.listMessages(chatId) }
+            val msgs = withContext(Dispatchers.IO) {
+                api.listMessages(chatId = chatId, around = around)
+            }
             if (currentChatId != chatId) return
             _messages.update { live ->
                 mergeMessages(msgs, live.filter {
@@ -753,6 +909,9 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
         openChatJob = null
         chatSocket.disconnect()
         currentChatId = null
+        com.example.monica.data.AppVisibility.setOpenChatId(null)
+        clearMessageSelection()
+        _replyTo.value = null
         _messages.value = emptyList()
         _partnerTyping.value = false
     }
@@ -782,12 +941,28 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
     fun sendMessage(text: String) {
         val content = text.trim()
         if (content.isEmpty()) return
+        val reply = _replyTo.value
         val ok = enqueueOutgoing(
             content = content,
             messageType = "text",
+            replyToSummary = reply?.let {
+                ReplySummary(
+                    id = it.id,
+                    chatId = it.chatId.orEmpty(),
+                    sender = it.sender,
+                    preview = when (it.messageType) {
+                        "photo" -> it.caption ?: "Фото"
+                        "voice" -> "Голосовое сообщение"
+                        "file" -> it.fileName ?: "Файл"
+                        else -> it.content
+                    }.take(160),
+                    messageType = it.messageType,
+                )
+            },
         ) { clientId ->
-            chatSocket.sendText(content, clientId)
+            chatSocket.sendText(content, clientId, reply?.id)
         }
+        if (ok) _replyTo.value = null
         if (!ok) _error.value = "Нет соединения с чатом"
         stopTyping()
     }
@@ -852,36 +1027,96 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
     ) {
         viewModelScope.launch {
             _loading.value = true
-            try {
-                val uploaded = withContext(Dispatchers.IO) {
-                    api.uploadFile(chatId, fileName, bytes, mimeType)
+            val clientId = UUID.randomUUID().toString()
+            val tempId = "temp-$clientId"
+            val safeMime = mimeType.ifBlank { "application/octet-stream" }
+            val guessedType = when {
+                safeMime.startsWith("image/") -> "photo"
+                safeMime.startsWith("audio/") || waveform.isNotEmpty() || voiceDurationMs != null -> "voice"
+                else -> "file"
+            }
+            val localKey = "local-$clientId"
+            val localPreviewPath = if (guessedType == "photo") {
+                withContext(Dispatchers.IO) {
+                    MediaImageCache.putBytes(getApplication(), localKey, bytes)?.absolutePath
                 }
-                val ok = enqueueOutgoing(
-                    content = uploaded.path,
+            } else null
+            val me = UserProfile(
+                id = session.userId.orEmpty(),
+                nickname = session.nickname.orEmpty(),
+            )
+            val optimistic = MessageItem(
+                id = tempId,
+                chatId = currentChatId,
+                sender = me,
+                messageType = guessedType,
+                content = if (guessedType == "photo") localKey else "",
+                contentUrl = null,
+                fileName = fileName,
+                mimeType = safeMime,
+                fileSize = bytes.size.toLong(),
+                waveform = waveform,
+                voiceDurationMs = voiceDurationMs,
+                sentAt = isoNow(),
+                readAt = null,
+                clientId = clientId,
+                clientStatus = "sending",
+                uploadProgress = 0f,
+                localPreviewPath = localPreviewPath,
+            )
+            _messages.update { it + optimistic }
+            applyChatPreview(optimistic)
+
+            fun patchTemp(transform: (MessageItem) -> MessageItem) {
+                _messages.update { list ->
+                    list.map { if (it.id == tempId) transform(it) else it }
+                }
+            }
+
+            try {
+                var lastStep = -1
+                val uploaded = withContext(Dispatchers.IO) {
+                    api.uploadFile(chatId, fileName, bytes, safeMime) { progress ->
+                        val step = (progress * 40).toInt()
+                        if (step != lastStep || progress >= 1f) {
+                            lastStep = step
+                            patchTemp { it.copy(uploadProgress = progress.coerceIn(0f, 1f)) }
+                        }
+                    }
+                }
+                if (guessedType == "photo" || uploaded.messageType == "photo") {
+                    withContext(Dispatchers.IO) {
+                        MediaImageCache.alias(getApplication(), localKey, uploaded.path)
+                    }
+                }
+                patchTemp {
+                    it.copy(
+                        content = uploaded.path,
+                        contentUrl = uploaded.contentUrl,
+                        fileName = uploaded.fileName,
+                        mimeType = uploaded.mimeType,
+                        fileSize = uploaded.fileSize,
+                        messageType = uploaded.messageType,
+                        uploadProgress = null,
+                    )
+                }
+                val ok = chatSocket.sendFile(
+                    path = uploaded.path,
                     messageType = uploaded.messageType,
-                    contentUrl = uploaded.contentUrl,
                     fileName = uploaded.fileName,
                     mimeType = uploaded.mimeType,
                     fileSize = uploaded.fileSize,
                     waveform = waveform,
                     voiceDurationMs = voiceDurationMs,
-                ) { clientId ->
-                    chatSocket.sendFile(
-                        path = uploaded.path,
-                        messageType = uploaded.messageType,
-                        fileName = uploaded.fileName,
-                        mimeType = uploaded.mimeType,
-                        fileSize = uploaded.fileSize,
-                        waveform = waveform,
-                        voiceDurationMs = voiceDurationMs,
-                        clientId = clientId,
-                    )
-                }
+                    clientId = clientId,
+                )
                 if (!ok) {
+                    _messages.update { list -> list.filterNot { it.id == tempId } }
                     _error.value = "Файл загружен, но WebSocket отключился"
                 }
                 onDone(ok)
             } catch (e: Exception) {
+                _messages.update { list -> list.filterNot { it.id == tempId } }
                 _error.value = e.message
                 onDone(false)
             } finally {
@@ -899,6 +1134,7 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
         fileSize: Long? = null,
         waveform: List<Float> = emptyList(),
         voiceDurationMs: Long? = null,
+        replyToSummary: ReplySummary? = null,
         send: (clientId: String) -> Boolean,
     ): Boolean {
         val clientId = UUID.randomUUID().toString()
@@ -918,6 +1154,7 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
             fileSize = fileSize,
             waveform = waveform,
             voiceDurationMs = voiceDurationMs,
+            replyToSummary = replyToSummary,
             sentAt = isoNow(),
             readAt = null,
             clientId = clientId,

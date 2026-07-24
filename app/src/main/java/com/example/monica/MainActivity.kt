@@ -38,6 +38,7 @@ import com.example.monica.data.ws.PresenceHub
 import com.example.monica.push.MonicaDaemonService
 import com.example.monica.ui.MonicaViewModel
 import com.example.monica.ui.components.CallHost
+import com.example.monica.ui.components.LinkCopiedBanner
 import com.example.monica.ui.screens.ChatDetailsScreen
 import com.example.monica.ui.screens.ChatListScreen
 import com.example.monica.ui.screens.ChatScreen
@@ -84,18 +85,18 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        // UI открыт — гарантируем демон + presence (не рвём уже живой сокет).
+        // UI открыт — online + демон без постоянного уведомления.
         if (SessionStore(this).isLoggedIn) {
-            MonicaDaemonService.start(this)
-            PresenceHub.ensureConnected(this)
+            PresenceHub.onAppForeground(this)
+            MonicaDaemonService.notifyUiForeground(this)
         }
     }
 
     override fun onStop() {
-        // Не отключаем presence: пользователь должен оставаться «в сети».
+        // Свернули приложение — offline, демон продолжает работать для FCM/звонков.
         if (SessionStore(this).isLoggedIn) {
-            MonicaDaemonService.start(this)
-            PresenceHub.ensureConnected(this)
+            PresenceHub.onAppBackground()
+            MonicaDaemonService.notifyUiBackground(this)
         }
         super.onStop()
     }
@@ -394,6 +395,7 @@ private fun MonicaNav(
                         callPermissionsLauncher.launch(arrayOf(Manifest.permission.CAMERA))
                     }
                 },
+                onSwitchCamera = { vm.switchCallCamera() },
                 onUpgradeToVideo = {
                     if (hasCam()) {
                         vm.upgradeCallToVideo()
@@ -404,6 +406,8 @@ private fun MonicaNav(
                 },
             )
         }
+
+        LinkCopiedBanner()
     }
 }
 

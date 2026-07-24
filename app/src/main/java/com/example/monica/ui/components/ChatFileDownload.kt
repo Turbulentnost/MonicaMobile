@@ -71,10 +71,10 @@ fun rememberChatFileDownloader(
         }
     }
 
-    return { path, url, name, mime ->
+    return download@{ path, url, name, mime ->
         if (busy) {
             Toast.makeText(context, "Скачивание…", Toast.LENGTH_SHORT).show()
-            return@return
+            return@download
         }
         val needsWrite = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
             ContextCompat.checkSelfPermission(

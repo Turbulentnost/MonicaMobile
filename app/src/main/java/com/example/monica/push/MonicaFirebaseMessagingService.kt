@@ -34,13 +34,24 @@ class MonicaFirebaseMessagingService : FirebaseMessagingService() {
             handleIncomingCall(message)
             return
         }
+        val chatId = message.data["chat_id"].orEmpty().ifBlank {
+            message.data["chatId"].orEmpty()
+        }
+        // Уже в этом чате на переднем плане — пуш не показываем.
+        if (
+            com.example.monica.data.AppVisibility.isForeground &&
+            chatId.isNotBlank() &&
+            chatId == com.example.monica.data.AppVisibility.openChatId
+        ) {
+            return
+        }
         showMessageNotification(message)
     }
 
     private fun handleIncomingCall(message: RemoteMessage) {
         val callId = message.data["call_id"].orEmpty()
         if (callId.isBlank()) return
-        // Поднимаем presence-демон (если процесс проснулся только от FCM).
+        // Звонок показывает IncomingCallService; демон без FGS-уведомления.
         MonicaDaemonService.start(this)
         CallNotificationHelper.showIncoming(
             context = this,

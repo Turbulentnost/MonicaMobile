@@ -199,12 +199,14 @@ fun ChatListScreen(
                             )
                             Spacer(Modifier.width(12.dp))
                             Column {
-                                Text("@${user.nickname}", fontWeight = FontWeight.SemiBold)
-                                Text(
-                                    "${user.firstName} ${user.lastName}".trim(),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
+                                Text(user.displayName, fontWeight = FontWeight.SemiBold)
+                                if (user.nickname.isNotBlank()) {
+                                    Text(
+                                        "@${user.nickname}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
                             }
                         }
                     }
@@ -382,7 +384,7 @@ private fun ChatRow(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = "@${chat.partner?.nickname ?: "—"}",
+                        text = chat.partner?.displayName ?: "—",
                         fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.weight(1f),
                         maxLines = 1,

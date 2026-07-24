@@ -15,7 +15,17 @@ data class UserProfile(
     val email: String = "",
     val city: String = "",
     val birthDate: String? = null,
-)
+) {
+    /** Фамилия и имя; если пусто — никнейм. */
+    val displayName: String
+        get() {
+            val name = listOf(lastName, firstName)
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+                .joinToString(" ")
+            return name.ifBlank { nickname.ifBlank { "—" } }
+        }
+}
 
 data class ChatSummary(
     val id: String,
@@ -32,6 +42,38 @@ data class MessageAttachment(
     val fileSize: Long? = null,
 )
 
+data class ForwardBundleItem(
+    val originalId: String,
+    val originalChatId: String,
+    val sender: UserProfile?,
+    val messageType: String,
+    val content: String,
+    val contentUrl: String? = null,
+    val caption: String? = null,
+    val fileName: String? = null,
+    val mimeType: String? = null,
+    val fileSize: Long? = null,
+    val attachments: List<MessageAttachment> = emptyList(),
+    val waveform: List<Float> = emptyList(),
+    val voiceDurationMs: Long? = null,
+    val sentAt: String,
+)
+
+data class PendingForward(
+    val sourceChatId: String,
+    val targetChatId: String,
+    val messageIds: List<String>,
+    val preview: MessageItem,
+)
+
+data class ReplySummary(
+    val id: String,
+    val chatId: String,
+    val sender: UserProfile?,
+    val preview: String,
+    val messageType: String,
+)
+
 data class MessageItem(
     val id: String,
     val chatId: String? = null,
@@ -46,15 +88,25 @@ data class MessageItem(
     val attachments: List<MessageAttachment> = emptyList(),
     val waveform: List<Float> = emptyList(),
     val voiceDurationMs: Long? = null,
+    val forwardBundle: List<ForwardBundleItem> = emptyList(),
+    val forwardedFromId: String? = null,
+    val replyToSummary: ReplySummary? = null,
     val sentAt: String,
     val readAt: String? = null,
     /** Корреляция optimistic → server ack */
     val clientId: String? = null,
     /** `sending` пока ждём `message.new` */
     val clientStatus: String? = null,
+    /** 0f…1f во время HTTP-загрузки файла/фото; null — не загружается */
+    val uploadProgress: Float? = null,
+    /** Локальный путь превью (исходящее фото до ответа сервера) */
+    val localPreviewPath: String? = null,
 ) {
     val isPending: Boolean
         get() = clientStatus == "sending" || id.startsWith("temp-")
+
+    val isUploading: Boolean
+        get() = uploadProgress != null
 
     /** Только для своих: sending / sent / read */
     fun deliveryStatus(isOwn: Boolean): DeliveryStatus? {
@@ -143,6 +195,10 @@ data class CallUiState(
     val partner: UserProfile? = null,
     val mediaMode: String = "audio",
     val cameraEnabled: Boolean = false,
+    /** true = фронтальная; false = основная (rear). */
+    val usingFrontCamera: Boolean = true,
+    /** Есть и front, и back — можно переключать. */
+    val canSwitchCamera: Boolean = false,
     val hasRemoteVideo: Boolean = false,
     /** Инкремент при смене video track — Compose перепривязывает sink. */
     val videoEpoch: Int = 0,

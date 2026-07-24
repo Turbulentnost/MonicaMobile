@@ -302,7 +302,11 @@ class ChatSocket(
         old?.close(1000, null)
     }
 
-    fun sendText(content: String, clientId: String? = null): Boolean {
+    fun sendText(
+        content: String,
+        clientId: String? = null,
+        replyToId: String? = null,
+    ): Boolean {
         val ws = socket ?: return false
         if (!_connected.value) return false
         val payload = JSONObject()
@@ -310,6 +314,7 @@ class ChatSocket(
             .put("content", content)
             .put("message_type", "text")
         if (!clientId.isNullOrBlank()) payload.put("client_id", clientId)
+        if (!replyToId.isNullOrBlank()) payload.put("reply_to", replyToId)
         return ws.send(payload.toString())
     }
 

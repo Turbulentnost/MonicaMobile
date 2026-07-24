@@ -32,10 +32,13 @@ object AvatarCache {
     fun objectPath(user: UserProfile?): String? =
         user?.photo?.trim()?.takeIf { it.isNotBlank() && it != "null" && "/" in it }
 
-    fun cacheKey(user: UserProfile?): String? {
-        objectPath(user)?.let { return it }
-        val id = user?.id?.takeIf { it.isNotBlank() } ?: return null
-        return "user:$id"
+    /** Ключ кэша только если у пользователя реально есть фото — иначе не дергаем GET avatar. */
+    fun cacheKey(user: UserProfile?): String? = objectPath(user)
+
+    private fun hasRemoteAvatar(user: UserProfile?): Boolean {
+        if (user == null) return false
+        if (objectPath(user) != null) return true
+        return !user.photoUrl.isNullOrBlank() && user.photoUrl != "null"
     }
 
     fun fileNameOf(photoKey: String): String = photoKey.substringAfterLast('/').ifBlank { photoKey }
@@ -67,7 +70,10 @@ object AvatarCache {
         session: SessionStore,
         user: UserProfile?,
     ): File? {
-        val photoKey = cacheKey(user) ?: return null
+        if (!hasRemoteAvatar(user)) return null
+        val photoKey = cacheKey(user)
+            ?: user?.id?.takeIf { it.isNotBlank() }?.let { "user:$it" }
+            ?: return null
         val updatedAt = user?.updatedAt
         getCachedFile(context, photoKey, updatedAt)?.let { return it }
 
@@ -77,10 +83,14 @@ object AvatarCache {
                 getCachedFile(context, photoKey, updatedAt)?.let { return it }
 
                 val token = session.accessToken
+                val path = objectPath(user)
 
-                // 1) Endpoint по user id: работает, даже если photo/photo_url
-                // не попали в JSON или presigned URL недоступен телефону.
-                if (!user?.id.isNullOrBlank() && !token.isNullOrBlank()) {
+                // 1) Endpoint по user id — только если в профиле есть photo path.
+                if (
+                    path != null &&
+                    !user?.id.isNullOrBlank() &&
+                    !token.isNullOrBlank()
+                ) {
                     runCatching {
                         MonicaApi(session).fetchUserAvatarBytes(user.id)
                     }.getOrNull()
@@ -90,8 +100,6 @@ object AvatarCache {
                                 ?.let { return it }
                         }
                 }
-
-                val path = objectPath(user)
 
                 // 2) API proxy по MinIO path
                 if (!path.isNullOrBlank() && !token.isNullOrBlank()) {
@@ -116,7 +124,7 @@ object AvatarCache {
     }
 
     fun warm(context: Context, session: SessionStore, user: UserProfile?) {
-        if (cacheKey(user) == null) return
+        if (!hasRemoteAvatar(user)) return
         getOrFetch(context, session, user)
     }
 

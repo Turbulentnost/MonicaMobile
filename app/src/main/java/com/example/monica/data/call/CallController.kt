@@ -103,6 +103,9 @@ class CallController(
     private var hasRemoteDescription = false
     private val pendingIce = mutableListOf<IceCandidate>()
     private var mediaMode: String = "audio"
+    /** Предпочтительная камера при следующем старте захвата. */
+    private var preferFrontCamera = true
+    private val switchingCamera = AtomicBoolean(false)
 
     private var timerJob: Job? = null
     private var disconnectJob: Job? = null
@@ -430,6 +433,27 @@ class CallController(
         }
     }
 
+    /** Front ↔ rear, если обе камеры доступны и локальное видео включено. */
+    fun switchCamera() {
+        if (!_state.value.cameraEnabled || !_state.value.canSwitchCamera) return
+        val capturer = videoCapturer ?: return
+        if (!switchingCamera.compareAndSet(false, true)) return
+        capturer.switchCamera(object : CameraVideoCapturer.CameraSwitchHandler {
+            override fun onCameraSwitchDone(isFrontCamera: Boolean) {
+                preferFrontCamera = isFrontCamera
+                // Не трогаем videoEpoch: remote sink остаётся, local пересоздаётся
+                // по ключу usingFrontCamera (зеркало front/back).
+                _state.update { it.copy(usingFrontCamera = isFrontCamera) }
+                switchingCamera.set(false)
+            }
+
+            override fun onCameraSwitchError(errorDescription: String?) {
+                switchingCamera.set(false)
+                emitError(errorDescription?.takeIf { it.isNotBlank() } ?: "Не удалось переключить камеру")
+            }
+        })
+    }
+
     fun upgradeToVideo() {
         if (mediaMode == "video" && _state.value.cameraEnabled) return
         toggleCamera()
@@ -510,6 +534,8 @@ class CallController(
             it.copy(
                 cameraEnabled = true,
                 mediaMode = "video",
+                usingFrontCamera = preferFrontCamera,
+                canSwitchCamera = CameraHelper.canSwitchCamera(appContext),
                 videoEpoch = it.videoEpoch + 1,
             )
         }
@@ -524,6 +550,7 @@ class CallController(
         _state.update {
             it.copy(
                 cameraEnabled = false,
+                canSwitchCamera = false,
                 videoEpoch = it.videoEpoch + 1,
             )
         }
@@ -569,11 +596,15 @@ class CallController(
         mediaMode = "audio"
         currentRoute = CallAudioRoute.Earpiece
         CallNotificationHelper.cancel(appContext)
+        preferFrontCamera = true
+        switchingCamera.set(false)
         _state.update {
             it.copy(
                 status = CallUiStatus.Ended,
                 mediaMode = "audio",
                 cameraEnabled = false,
+                usingFrontCamera = true,
+                canSwitchCamera = false,
                 hasRemoteVideo = false,
                 muted = false,
                 audioRoute = CallAudioRoute.Earpiece,
@@ -687,14 +718,27 @@ class CallController(
         if (wantVideo) {
             if (hasCameraDevice()) {
                 ensureLocalVideo()
-                _state.update { it.copy(cameraEnabled = true, mediaMode = "video") }
+                _state.update {
+                    it.copy(
+                        cameraEnabled = true,
+                        mediaMode = "video",
+                        usingFrontCamera = preferFrontCamera,
+                        canSwitchCamera = CameraHelper.canSwitchCamera(appContext),
+                    )
+                }
             } else if (requiredVideo) {
                 error("Камера не найдена.")
             } else {
-                _state.update { it.copy(cameraEnabled = false, mediaMode = "video") }
+                _state.update {
+                    it.copy(
+                        cameraEnabled = false,
+                        canSwitchCamera = false,
+                        mediaMode = "video",
+                    )
+                }
             }
         } else {
-            _state.update { it.copy(cameraEnabled = false) }
+            _state.update { it.copy(cameraEnabled = false, canSwitchCamera = false) }
         }
     }
 
@@ -715,11 +759,17 @@ class CallController(
     private fun ensureLocalVideo() {
         if (localVideoTrack != null) {
             localVideoTrack?.setEnabled(true)
+            _state.update {
+                it.copy(
+                    usingFrontCamera = preferFrontCamera,
+                    canSwitchCamera = CameraHelper.canSwitchCamera(appContext),
+                )
+            }
             return
         }
         val f = factory ?: error("PeerConnectionFactory не инициализирован")
         val egl = eglBase ?: error("EglBase не инициализирован")
-        val capturer = CameraHelper.createCapturer(appContext)
+        val capturer = CameraHelper.createCapturer(appContext, preferFront = preferFrontCamera)
             ?: error("Камера не найдена.")
         videoCapturer = capturer
         surfaceHelper = SurfaceTextureHelper.create("MonicaCapture", egl.eglBaseContext)
@@ -732,7 +782,13 @@ class CallController(
                 localSinks.forEach { track.addSink(it) }
             }
         }
-        _state.update { it.copy(videoEpoch = it.videoEpoch + 1) }
+        _state.update {
+            it.copy(
+                videoEpoch = it.videoEpoch + 1,
+                usingFrontCamera = preferFrontCamera,
+                canSwitchCamera = CameraHelper.canSwitchCamera(appContext),
+            )
+        }
     }
 
     /** Сброс локальных WebRTC-ресурсов без смены статуса звонка (для повторного Incoming). */
@@ -1179,24 +1235,34 @@ class CallController(
 }
 
 object CameraHelper {
-    fun hasCamera(context: Context): Boolean {
-        val enumerator = if (Camera2Enumerator.isSupported(context)) {
+    private fun enumerator(context: Context) =
+        if (Camera2Enumerator.isSupported(context)) {
             Camera2Enumerator(context)
         } else {
             Camera1Enumerator(false)
         }
-        return enumerator.deviceNames.isNotEmpty()
+
+    fun hasCamera(context: Context): Boolean =
+        enumerator(context).deviceNames.isNotEmpty()
+
+    fun canSwitchCamera(context: Context): Boolean {
+        val enumerator = enumerator(context)
+        val names = enumerator.deviceNames
+        val hasFront = names.any { enumerator.isFrontFacing(it) }
+        val hasBack = names.any { enumerator.isBackFacing(it) }
+        return hasFront && hasBack
     }
 
-    fun createCapturer(context: Context): CameraVideoCapturer? {
-        val enumerator = if (Camera2Enumerator.isSupported(context)) {
-            Camera2Enumerator(context)
-        } else {
-            Camera1Enumerator(false)
-        }
+    fun createCapturer(context: Context, preferFront: Boolean = true): CameraVideoCapturer? {
+        val enumerator = enumerator(context)
         val names = enumerator.deviceNames
         val front = names.firstOrNull { enumerator.isFrontFacing(it) }
-        val chosen = front ?: names.firstOrNull() ?: return null
+        val back = names.firstOrNull { enumerator.isBackFacing(it) }
+        val chosen = if (preferFront) {
+            front ?: back ?: names.firstOrNull()
+        } else {
+            back ?: front ?: names.firstOrNull()
+        } ?: return null
         return enumerator.createCapturer(chosen, null)
     }
 }

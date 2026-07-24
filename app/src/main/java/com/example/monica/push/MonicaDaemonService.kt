@@ -1,20 +1,12 @@
 package com.example.monica.push
 
-import android.app.Notification
-import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.content.pm.ServiceInfo
-import android.os.Build
 import android.os.IBinder
 import android.util.Log
-import androidx.core.app.NotificationCompat
-import androidx.core.app.ServiceCompat
-import androidx.core.content.ContextCompat
-import com.example.monica.MainActivity
-import com.example.monica.MonicaApp
-import com.example.monica.R
+import androidx.core.app.NotificationManagerCompat
+import com.example.monica.data.AppVisibility
 import com.example.monica.data.SessionStore
 import com.example.monica.data.ws.PresenceHub
 import kotlinx.coroutines.CoroutineScope
@@ -27,8 +19,9 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
- * Лёгкий фоновый «демон»: держит process + presence WebSocket,
- * чтобы пользователь оставался «в сети» и принимал звонки при закрытом UI.
+ * Лёгкий фоновый сервис без постоянного уведомления.
+ * Presence (online) — только когда UI на переднем плане.
+ * Входящие звонки в фоне доставляет FCM (+ IncomingCallService), не этот демон.
  */
 class MonicaDaemonService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -39,25 +32,40 @@ class MonicaDaemonService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        startDaemonForeground()
-        PresenceHub.ensureConnected(this)
+        // На случай обновления со старой версии — убрать «Фоновый режим».
+        clearDaemonNotification()
+        if (AppVisibility.isForeground) {
+            PresenceHub.ensureConnected(this)
+        }
         watchIncomingCalls()
         startKeepAliveLoop()
         Log.i(TAG, "Daemon started")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            stopSelf()
-            return START_NOT_STICKY
+        clearDaemonNotification()
+        when (intent?.action) {
+            ACTION_STOP -> {
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            ACTION_UI_FOREGROUND -> {
+                PresenceHub.ensureConnected(this)
+                return START_STICKY
+            }
+            ACTION_UI_BACKGROUND -> {
+                PresenceHub.onAppBackground()
+                return START_STICKY
+            }
         }
         val session = SessionStore(this)
         if (!session.isLoggedIn) {
             stopSelf()
             return START_NOT_STICKY
         }
-        startDaemonForeground()
-        PresenceHub.ensureConnected(this)
+        if (AppVisibility.isForeground) {
+            PresenceHub.ensureConnected(this)
+        }
         if (callWatchJob?.isActive != true) watchIncomingCalls()
         if (keepAliveJob?.isActive != true) startKeepAliveLoop()
         return START_STICKY
@@ -68,10 +76,9 @@ class MonicaDaemonService : Service() {
         callWatchJob = null
         keepAliveJob?.cancel()
         keepAliveJob = null
+        clearDaemonNotification()
         scope.cancel()
         Log.i(TAG, "Daemon stopped")
-        // Не трогаем PresenceHub здесь: stop() вызывается только при logout,
-        // а logout сам делает PresenceHub.disconnect().
         super.onDestroy()
     }
 
@@ -80,7 +87,9 @@ class MonicaDaemonService : Service() {
         keepAliveJob = scope.launch {
             while (isActive) {
                 if (SessionStore(this@MonicaDaemonService).isLoggedIn) {
-                    PresenceHub.ensureConnected(this@MonicaDaemonService)
+                    if (AppVisibility.isForeground) {
+                        PresenceHub.ensureConnected(this@MonicaDaemonService)
+                    }
                 }
                 delay(15_000)
             }
@@ -121,60 +130,46 @@ class MonicaDaemonService : Service() {
         }
     }
 
-    private fun startDaemonForeground() {
-        val notification = buildDaemonNotification()
+    private fun clearDaemonNotification() {
         runCatching {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                ServiceCompat.startForeground(
-                    this,
-                    NOTIFICATION_ID,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
-                )
-            } else {
-                @Suppress("DEPRECATION")
-                startForeground(NOTIFICATION_ID, notification)
-            }
-        }.onFailure {
-            @Suppress("DEPRECATION")
-            startForeground(NOTIFICATION_ID, notification)
+            stopForeground(STOP_FOREGROUND_REMOVE)
         }
-    }
-
-    private fun buildDaemonNotification(): Notification {
-        val open = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        runCatching {
+            NotificationManagerCompat.from(this).cancel(NOTIFICATION_ID)
         }
-        val pending = PendingIntent.getActivity(
-            this,
-            0,
-            open,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-        return NotificationCompat.Builder(this, MonicaApp.CHANNEL_DAEMON)
-            .setSmallIcon(R.drawable.ic_stat_monica)
-            .setContentTitle("Monica на связи")
-            .setContentText("Вы в сети · ожидание звонков")
-            .setOngoing(true)
-            .setShowWhen(false)
-            .setSilent(true)
-            .setPriority(NotificationCompat.PRIORITY_MIN)
-            .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .setContentIntent(pending)
-            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_DEFERRED)
-            .build()
     }
 
     companion object {
         private const val TAG = "MonicaDaemon"
         const val NOTIFICATION_ID = 70001
         const val ACTION_STOP = "com.example.monica.action.STOP_DAEMON"
+        const val ACTION_UI_FOREGROUND = "com.example.monica.action.DAEMON_UI_FOREGROUND"
+        const val ACTION_UI_BACKGROUND = "com.example.monica.action.DAEMON_UI_BACKGROUND"
 
         fun start(context: Context) {
             val session = SessionStore(context)
             if (!session.isLoggedIn) return
             val intent = Intent(context, MonicaDaemonService::class.java)
-            ContextCompat.startForegroundService(context, intent)
+            runCatching { context.startService(intent) }
+                .onFailure { Log.w(TAG, "Daemon start skipped: ${it.message}") }
+        }
+
+        fun notifyUiForeground(context: Context) {
+            if (!SessionStore(context).isLoggedIn) return
+            val intent = Intent(context, MonicaDaemonService::class.java).apply {
+                action = ACTION_UI_FOREGROUND
+            }
+            runCatching { context.startService(intent) }
+                .onFailure { Log.w(TAG, "Daemon foreground notify skipped: ${it.message}") }
+        }
+
+        fun notifyUiBackground(context: Context) {
+            if (!SessionStore(context).isLoggedIn) return
+            val intent = Intent(context, MonicaDaemonService::class.java).apply {
+                action = ACTION_UI_BACKGROUND
+            }
+            runCatching { context.startService(intent) }
+                .onFailure { Log.w(TAG, "Daemon background notify skipped: ${it.message}") }
         }
 
         fun stop(context: Context) {
@@ -183,6 +178,9 @@ class MonicaDaemonService : Service() {
             }
             runCatching { context.startService(intent) }
             runCatching { context.stopService(Intent(context, MonicaDaemonService::class.java)) }
+            runCatching {
+                NotificationManagerCompat.from(context.applicationContext).cancel(NOTIFICATION_ID)
+            }
         }
     }
 }

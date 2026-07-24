@@ -21,7 +21,7 @@ class MonicaApp : Application(), ImageLoaderFactory {
         super.onCreate()
         createNotificationChannel()
         PushRegistrar.refreshTokenIfLoggedIn(this)
-        // Фоновый демон presence — чтобы звонки доходили при закрытом UI.
+        // Лёгкий демон без постоянного уведомления (presence только в UI).
         val session = com.example.monica.data.SessionStore(this)
         if (session.isLoggedIn) {
             MonicaDaemonService.start(this)
@@ -106,13 +106,14 @@ class MonicaApp : Application(), ImageLoaderFactory {
                 lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
             },
         )
+        runCatching { manager.deleteNotificationChannel("daemon_monica") }
         manager.createNotificationChannel(
             NotificationChannel(
                 CHANNEL_DAEMON,
                 "Фон Monica",
-                NotificationManager.IMPORTANCE_LOW,
+                NotificationManager.IMPORTANCE_MIN,
             ).apply {
-                description = "Держит соединение для входящих звонков (минимальный расход)"
+                description = "Служебный фон для доставки звонков (без звука)"
                 setShowBadge(false)
                 enableVibration(false)
                 setSound(null, null)
@@ -124,6 +125,6 @@ class MonicaApp : Application(), ImageLoaderFactory {
     companion object {
         const val CHANNEL_MESSAGES = "messages_monica"
         const val CHANNEL_CALLS = "calls_monica_v3"
-        const val CHANNEL_DAEMON = "daemon_monica"
+        const val CHANNEL_DAEMON = "daemon_monica_v2"
     }
 }

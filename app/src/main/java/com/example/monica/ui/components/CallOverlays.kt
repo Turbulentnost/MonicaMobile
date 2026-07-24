@@ -19,6 +19,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
+import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.Hearing
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
@@ -37,6 +38,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.keepScreenOn
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -61,6 +63,7 @@ fun CallHost(
     onToggleMute: () -> Unit,
     onCycleAudioRoute: () -> Unit,
     onToggleCamera: () -> Unit,
+    onSwitchCamera: () -> Unit,
     onUpgradeToVideo: () -> Unit,
 ) {
     when (state.status) {
@@ -85,6 +88,7 @@ fun CallHost(
             onToggleMute = onToggleMute,
             onCycleAudioRoute = onCycleAudioRoute,
             onToggleCamera = onToggleCamera,
+            onSwitchCamera = onSwitchCamera,
             onUpgradeToVideo = onUpgradeToVideo,
         )
         else -> Unit
@@ -156,6 +160,7 @@ private fun ActiveCallScreen(
     onToggleMute: () -> Unit,
     onCycleAudioRoute: () -> Unit,
     onToggleCamera: () -> Unit,
+    onSwitchCamera: () -> Unit,
     onUpgradeToVideo: () -> Unit,
 ) {
     val statusText = when (state.status) {
@@ -168,7 +173,10 @@ private fun ActiveCallScreen(
     val egl = callController.eglBaseContext()
 
     Surface(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            // Видеозвонок: экран не гаснет по таймауту бездействия.
+            .then(if (state.isVideo) Modifier.keepScreenOn() else Modifier),
         color = Color(0xFF121418),
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
@@ -178,8 +186,11 @@ private fun ActiveCallScreen(
                     callController = callController,
                     videoEpoch = state.videoEpoch,
                     cameraEnabled = state.cameraEnabled,
+                    usingFrontCamera = state.usingFrontCamera,
+                    canSwitchCamera = state.canSwitchCamera,
                     hasRemoteVideo = state.hasRemoteVideo,
                     partnerNickname = state.partner?.nickname,
+                    onSwitchCamera = onSwitchCamera,
                 )
             } else {
                 Column(
@@ -308,8 +319,11 @@ private fun VideoCallStage(
     callController: CallController,
     videoEpoch: Int,
     cameraEnabled: Boolean,
+    usingFrontCamera: Boolean,
+    canSwitchCamera: Boolean,
     hasRemoteVideo: Boolean,
     partnerNickname: String?,
+    onSwitchCamera: () -> Unit,
 ) {
     Box(modifier = Modifier.fillMaxSize()) {
         // Всегда вешаем remote sink — иначе видео звонящего не появится у абонента без камеры.
@@ -352,11 +366,11 @@ private fun VideoCallStage(
                 .clip(RoundedCornerShape(14.dp))
                 .background(Color(0xFF232833)),
         ) {
-            key("local-$videoEpoch-$cameraEnabled") {
+            key("local-$videoEpoch-$cameraEnabled-$usingFrontCamera") {
                 if (cameraEnabled) {
                     WebRtcVideo(
                         eglContext = eglContext,
-                        mirror = true,
+                        mirror = usingFrontCamera,
                         modifier = Modifier.fillMaxSize(),
                         onBind = { callController.attachLocalSink(it) },
                         onUnbind = { callController.detachLocalSink(it) },
@@ -372,6 +386,22 @@ private fun VideoCallStage(
                             color = Color(0xFFB8C0CC),
                         )
                     }
+                }
+            }
+            if (cameraEnabled && canSwitchCamera) {
+                IconButton(
+                    onClick = onSwitchCamera,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .size(36.dp)
+                        .semantics { contentDescription = "Переключить камеру" },
+                ) {
+                    Icon(
+                        Icons.Filled.Cameraswitch,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp),
+                    )
                 }
             }
         }
