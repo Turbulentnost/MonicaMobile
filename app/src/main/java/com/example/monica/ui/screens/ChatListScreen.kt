@@ -1,5 +1,8 @@
 package com.example.monica.ui.screens
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -18,7 +21,7 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
@@ -53,7 +56,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -72,6 +78,12 @@ import com.example.monica.ui.components.UserAvatar
 import com.example.monica.ui.util.TimeFormat
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+
+private val ChatGlassFill = Color(0x28FFFFFF)
+private val ChatGlassBorder = Color(0x55E8D5B0)
+private val ChatGlassDivider = Color(0x66E8D5B0)
+private val ChatListGlassShape = RoundedCornerShape(18.dp)
+private val ChatHeaderScrim = Color(0x66000000)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -128,120 +140,173 @@ fun ChatListScreen(
         }
     }
 
-    ModalNavigationDrawer(
-        drawerState = drawerState,
-        drawerContent = {
-            MonicaDrawerContent(
-                nickname = vm.session.nickname,
-                darkTheme = darkTheme,
-                onProfile = { closeDrawerAnd(onOpenProfile) },
-                onSettings = { closeDrawerAnd(onOpenSettings) },
-                onNotifications = { closeDrawerAnd(onOpenNotifications) },
-                onToggleTheme = { vm.toggleTheme() },
-                onLogout = {
-                    scope.launch {
-                        drawerState.close()
-                        menuPlay = false
-                        vm.logout()
-                    }
-                },
-            )
-        },
-    ) {
-        Scaffold(
-            topBar = {
-                ChatListHeader(
-                    vm = vm,
-                    query = query,
-                    onQueryChange = { query = it },
-                    unread = unread,
-                    menuPlay = menuPlay,
-                    onMenuClick = { openDrawer() },
-                    onNotifications = onOpenNotifications,
-                    onCreateGroup = onCreateGroup,
+    Box(modifier = Modifier.fillMaxSize()) {
+        Image(
+            painter = painterResource(R.drawable.chat_list_bg),
+            contentDescription = null,
+            modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Crop,
+        )
+
+        ModalNavigationDrawer(
+            drawerState = drawerState,
+            drawerContent = {
+                MonicaDrawerContent(
+                    nickname = vm.session.nickname,
+                    darkTheme = darkTheme,
+                    onProfile = { closeDrawerAnd(onOpenProfile) },
+                    onSettings = { closeDrawerAnd(onOpenSettings) },
+                    onNotifications = { closeDrawerAnd(onOpenNotifications) },
+                    onToggleTheme = { vm.toggleTheme() },
+                    onLogout = {
+                        scope.launch {
+                            drawerState.close()
+                            menuPlay = false
+                            vm.logout()
+                        }
+                    },
                 )
             },
-        ) { padding ->
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding)
-                    .padding(horizontal = 16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                inviteBanner?.let { banner ->
-                    InviteBanner(
-                        notification = banner,
-                        onAccept = { vm.acceptInvite(banner) },
-                        onDecline = { vm.declineInvite(banner) },
-                        onDismiss = { vm.dismissInviteBanner() },
+        ) {
+            Scaffold(
+                containerColor = Color.Transparent,
+                topBar = {
+                    ChatListHeader(
+                        vm = vm,
+                        query = query,
+                        onQueryChange = { query = it },
+                        unread = unread,
+                        menuPlay = menuPlay,
+                        onMenuClick = { openDrawer() },
+                        onNotifications = onOpenNotifications,
+                        onCreateGroup = onCreateGroup,
                     )
-                    Spacer(Modifier.height(8.dp))
-                }
+                },
+            ) { padding ->
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(padding)
+                        .padding(horizontal = 14.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    inviteBanner?.let { banner ->
+                        InviteBanner(
+                            notification = banner,
+                            onAccept = { vm.acceptInvite(banner) },
+                            onDecline = { vm.declineInvite(banner) },
+                            onDismiss = { vm.dismissInviteBanner() },
+                        )
+                        Spacer(Modifier.height(8.dp))
+                    }
 
-                if (searchResults.isNotEmpty()) {
-                    Text(
-                        "Результаты",
-                        style = MaterialTheme.typography.labelLarge,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 8.dp, bottom = 4.dp),
-                    )
-                    searchResults.forEach { user ->
-                        Row(
+                    if (searchResults.isNotEmpty()) {
+                        GlassPanel(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable {
-                                    vm.startChatWith(user.id) { chatId ->
-                                        query = ""
-                                        onOpenChat(chatId)
-                                    }
-                                }
-                                .padding(vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
+                                .padding(top = 8.dp),
                         ) {
-                            UserAvatar(
-                                user = user,
-                                size = 40.dp,
-                                showOnline = true,
-                                isOnline = onlineIds.contains(user.id),
-                            )
-                            Spacer(Modifier.width(12.dp))
-                            Column {
-                                Text(user.displayName, fontWeight = FontWeight.SemiBold)
-                                if (user.nickname.isNotBlank()) {
-                                    Text(
-                                        "@${user.nickname}",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
+                            Column(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            ) {
+                                Text(
+                                    "Результаты",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = Color.White,
+                                    modifier = Modifier.padding(bottom = 4.dp),
+                                )
+                                searchResults.forEachIndexed { index, user ->
+                                    if (index > 0) {
+                                        HorizontalDivider(
+                                            thickness = 0.5.dp,
+                                            color = ChatGlassDivider,
+                                        )
+                                    }
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                vm.startChatWith(user.id) { chatId ->
+                                                    query = ""
+                                                    onOpenChat(chatId)
+                                                }
+                                            }
+                                            .padding(vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        UserAvatar(
+                                            user = user,
+                                            size = 40.dp,
+                                            showOnline = true,
+                                            isOnline = onlineIds.contains(user.id),
+                                        )
+                                        Spacer(Modifier.width(12.dp))
+                                        Column {
+                                            Text(
+                                                user.displayName,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = Color.White,
+                                            )
+                                            if (user.nickname.isNotBlank()) {
+                                                Text(
+                                                    "@${user.nickname}",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = Color.White.copy(alpha = 0.72f),
+                                                )
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
+                        Spacer(Modifier.height(12.dp))
                     }
-                    Spacer(Modifier.height(12.dp))
-                }
 
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(top = 8.dp, bottom = 24.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    items(chats, key = { it.id }) { chat ->
-                        val hasInvite = incomingInvites.containsKey(chat.id)
-                        ChatRow(
-                            chat = chat,
-                            isOnline = !chat.isGroup && onlineIds.contains(chat.partner?.id),
-                            hasPrivateInvite = !chat.isGroup && hasInvite,
-                            isRinging = ringingChatId == chat.id,
-                            isVideoRinging = ringingChatId == chat.id && callState.isVideo,
-                            onClick = { onOpenChat(chat.id) },
-                            onAcceptInvite = { vm.acceptInviteForChat(chat.id) },
-                        )
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(top = 8.dp, bottom = 24.dp),
+                    ) {
+                        itemsIndexed(chats, key = { _, chat -> chat.id }) { index, chat ->
+                            if (index > 0) {
+                                HorizontalDivider(
+                                    modifier = Modifier.padding(vertical = 8.dp, horizontal = 6.dp),
+                                    thickness = 0.5.dp,
+                                    color = ChatGlassDivider,
+                                )
+                            }
+                            val hasInvite = incomingInvites.containsKey(chat.id)
+                            ChatRow(
+                                chat = chat,
+                                isOnline = !chat.isGroup && onlineIds.contains(chat.partner?.id),
+                                hasPrivateInvite = !chat.isGroup && hasInvite,
+                                isRinging = ringingChatId == chat.id,
+                                isVideoRinging = ringingChatId == chat.id && callState.isVideo,
+                                onClick = { onOpenChat(chat.id) },
+                                onAcceptInvite = { vm.acceptInviteForChat(chat.id) },
+                            )
+                        }
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun GlassPanel(
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    Surface(
+        modifier = modifier
+            .clip(ChatListGlassShape)
+            .border(1.dp, ChatGlassBorder, ChatListGlassShape),
+        color = ChatGlassFill,
+        shape = ChatListGlassShape,
+        tonalElevation = 0.dp,
+        shadowElevation = 0.dp,
+    ) {
+        content()
     }
 }
 
@@ -260,7 +325,7 @@ private fun ChatListHeader(
     var createMenuOpen by remember { mutableStateOf(false) }
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surface,
+        color = ChatHeaderScrim,
         tonalElevation = 0.dp,
         shadowElevation = 0.dp,
     ) {
@@ -280,7 +345,7 @@ private fun ChatListHeader(
                     MainMenuIcon(
                         play = menuPlay,
                         size = 26.dp,
-                        color = MaterialTheme.colorScheme.onSurface,
+                        color = Color.White,
                     )
                 }
 
@@ -295,6 +360,7 @@ private fun ChatListHeader(
                         Text(
                             "Поиск…",
                             style = MaterialTheme.typography.bodyMedium,
+                            color = Color.White.copy(alpha = 0.65f),
                         )
                     },
                     leadingIcon = {
@@ -302,16 +368,20 @@ private fun ChatListHeader(
                             Icons.Outlined.Search,
                             contentDescription = null,
                             modifier = Modifier.size(20.dp),
+                            tint = Color.White.copy(alpha = 0.85f),
                         )
                     },
                     shape = RoundedCornerShape(24.dp),
-                    textStyle = MaterialTheme.typography.bodyMedium,
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(color = Color.White),
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-                        disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-                        focusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
-                        unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        cursorColor = Color.White,
+                        focusedContainerColor = ChatGlassFill,
+                        unfocusedContainerColor = ChatGlassFill,
+                        disabledContainerColor = ChatGlassFill,
+                        focusedBorderColor = ChatGlassBorder,
+                        unfocusedBorderColor = ChatGlassBorder.copy(alpha = 0.55f),
                     ),
                 )
 
@@ -323,7 +393,7 @@ private fun ChatListHeader(
                         Icon(
                             Icons.Outlined.Add,
                             contentDescription = "Создать",
-                            tint = MaterialTheme.colorScheme.onSurface,
+                            tint = Color.White,
                         )
                     }
                     DropdownMenu(
@@ -360,7 +430,7 @@ private fun ChatListHeader(
                             resId = R.drawable.ic_bell,
                             contentDescription = "Уведомления",
                             size = 32.dp,
-                            tint = MaterialTheme.colorScheme.onSurface,
+                            tint = Color.White,
                         )
                     }
                 }
@@ -368,7 +438,7 @@ private fun ChatListHeader(
             NowPlayingStripHost(vm = vm)
             HorizontalDivider(
                 thickness = 0.5.dp,
-                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
+                color = ChatGlassDivider,
             )
         }
     }
@@ -414,66 +484,69 @@ private fun ChatRow(
     NeonInviteBorder(
         enabled = hasPrivateInvite,
         modifier = Modifier.fillMaxWidth(),
-        corner = 14.dp,
+        corner = 18.dp,
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable(onClick = onClick)
-                .padding(horizontal = 10.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            UserAvatar(
-                chat.avatarUser(),
-                size = 42.dp,
-                showOnline = !chat.isGroup,
-                isOnline = isOnline,
-            )
-            Spacer(Modifier.width(12.dp))
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.Center,
+        GlassPanel(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onClick)
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                UserAvatar(
+                    chat.avatarUser(),
+                    size = 42.dp,
+                    showOnline = !chat.isGroup,
+                    isOnline = isOnline,
+                )
+                Spacer(Modifier.width(12.dp))
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = chat.displayTitle,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color.White,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        if (time.isNotBlank()) {
+                            Text(
+                                time,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.White.copy(alpha = 0.7f),
+                            )
+                        }
+                    }
                     Text(
-                        text = chat.displayTitle,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.weight(1f),
+                        subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = when {
+                            isRinging -> Color(0xFF81C784)
+                            hasPrivateInvite -> Color(0xFFFF8A80)
+                            else -> Color.White.copy(alpha = 0.72f)
+                        },
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    if (time.isNotBlank()) {
-                        Text(
-                            time,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                }
+                if (hasPrivateInvite) {
+                    Spacer(Modifier.width(8.dp))
+                    IconButton(
+                        onClick = onAcceptInvite,
+                        modifier = Modifier.size(40.dp),
+                    ) {
+                        AppIcon(
+                            resId = R.drawable.ic_check_green,
+                            contentDescription = "Принять приватный чат",
+                            size = 32.dp,
+                            tint = null,
                         )
                     }
-                }
-                Text(
-                    subtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = when {
-                        isRinging -> Color(0xFF43A047)
-                        hasPrivateInvite -> Color(0xFFFF5252)
-                        else -> MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            if (hasPrivateInvite) {
-                Spacer(Modifier.width(8.dp))
-                IconButton(
-                    onClick = onAcceptInvite,
-                    modifier = Modifier.size(40.dp),
-                ) {
-                    AppIcon(
-                        resId = R.drawable.ic_check_green,
-                        contentDescription = "Принять приватный чат",
-                        size = 32.dp,
-                        tint = null,
-                    )
                 }
             }
         }
@@ -489,19 +562,22 @@ private fun InviteBanner(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        colors = CardDefaults.cardColors(containerColor = ChatGlassFill),
         shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, ChatGlassBorder),
     ) {
         Text(
             text = notification.title,
             modifier = Modifier.padding(start = 12.dp, top = 12.dp, end = 12.dp),
             fontWeight = FontWeight.SemiBold,
+            color = Color.White,
         )
         if (notification.body.isNotBlank()) {
             Text(
                 text = notification.body,
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                 style = MaterialTheme.typography.bodySmall,
+                color = Color.White.copy(alpha = 0.8f),
             )
         }
         Row(

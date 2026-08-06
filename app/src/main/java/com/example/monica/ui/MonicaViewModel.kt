@@ -1664,16 +1664,14 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
         checkAppUpdate()
     }
 
-    fun checkAppUpdate(force: Boolean = false) {
+    fun checkAppUpdate() {
         if (updateCheckJob?.isActive == true) return
         updateCheckJob = viewModelScope.launch {
             try {
                 val update = withContext(Dispatchers.IO) {
-                    updateChecker.check(force)
+                    updateChecker.check()
                 }
-                if (update != null) {
-                    _appUpdate.value = update
-                }
+                _appUpdate.value = update
             } catch (_: Exception) {
                 // Update checks are best-effort and should not interrupt chat startup.
             }

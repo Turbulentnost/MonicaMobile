@@ -24,13 +24,8 @@ class AppUpdateChecker(
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    fun check(force: Boolean = false): AppUpdateInfo? {
-        val now = System.currentTimeMillis()
-        if (!force && now - session.updateLastCheckAt < CHECK_COOLDOWN_MS) {
-            return null
-        }
-        session.updateLastCheckAt = now
-
+    /** Проверка при каждом открытии приложения — без cooldown. */
+    fun check(): AppUpdateInfo? {
         val owner = BuildConfig.UPDATE_GITHUB_OWNER
         val repo = BuildConfig.UPDATE_GITHUB_REPO
         val request = Request.Builder()
@@ -115,7 +110,6 @@ class AppUpdateChecker(
     }
 
     companion object {
-        const val CHECK_COOLDOWN_MS = 6 * 60 * 60 * 1000L
         private val VERSION_CODE_REGEX = Regex("""(?im)\bversionCode\s*:\s*(\d+)\b""")
     }
 }

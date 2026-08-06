@@ -34,10 +34,6 @@ class SessionStore(context: Context) {
         get() = prefs.getBoolean(KEY_DARK_THEME, true)
         set(value) = prefs.edit().putBoolean(KEY_DARK_THEME, value).apply()
 
-    var updateLastCheckAt: Long
-        get() = prefs.getLong(KEY_UPDATE_LAST_CHECK_AT, 0L)
-        set(value) = prefs.edit().putLong(KEY_UPDATE_LAST_CHECK_AT, value).apply()
-
     var dismissedUpdateVersionCode: Int
         get() = prefs.getInt(KEY_DISMISSED_UPDATE_VERSION_CODE, 0)
         set(value) = prefs.edit().putInt(KEY_DISMISSED_UPDATE_VERSION_CODE, value).apply()
@@ -86,7 +82,6 @@ class SessionStore(context: Context) {
         private const val KEY_NICKNAME = "nickname"
         private const val KEY_DARK_THEME = "dark_theme"
         private const val KEY_CALL_CLIENT_INSTANCE = "call_client_instance_id"
-        private const val KEY_UPDATE_LAST_CHECK_AT = "update_last_check_at"
         private const val KEY_DISMISSED_UPDATE_VERSION_CODE = "dismissed_update_version_code"
     }
 }
