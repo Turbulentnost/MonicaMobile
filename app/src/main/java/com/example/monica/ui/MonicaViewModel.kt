@@ -1689,6 +1689,12 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
     fun startUpdateDownload() {
         val update = _appUpdate.value ?: return
         if (updateDownloadJob?.isActive == true) return
+        // Пока APK ещё не загружен в GitHub Release — открываем страницу релиза.
+        if (update.apkUrl.isBlank()) {
+            updateInstaller.openReleasePage(update.releaseUrl)
+            _error.value = "APK ещё готовится — открыл страницу релиза"
+            return
+        }
         if (!updateInstaller.canRequestPackageInstalls()) {
             pendingUpdateInstallPermission = true
             updateInstaller.openInstallPermissionSettings()

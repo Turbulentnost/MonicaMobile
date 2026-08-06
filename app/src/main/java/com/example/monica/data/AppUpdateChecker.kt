@@ -37,7 +37,7 @@ class AppUpdateChecker(
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) return null
             val json = JSONObject(response.body?.string().orEmpty())
-            val asset = findApkAsset(json) ?: return null
+            val asset = findApkAsset(json)
             val tag = json.optString("tag_name").trim()
             val body = json.optString("body").trim()
             val versionName = tag.removePrefix("v").ifBlank {
@@ -59,13 +59,19 @@ class AppUpdateChecker(
                 ?: semverToComparable(versionName).coerceAtLeast(BuildConfig.VERSION_CODE + 1)
             if (session.dismissedUpdateVersionCode == effectiveVersionCode) return null
 
+            // APK может появиться чуть позже публикации тега — баннер всё равно показываем,
+            // если есть страница релиза или прямая ссылка на файл.
+            val apkUrl = asset?.optString("browser_download_url").orEmpty()
+            val releaseUrl = json.optString("html_url").trim()
+            if (apkUrl.isBlank() && releaseUrl.isBlank()) return null
+
             return AppUpdateInfo(
                 versionName = versionName.ifBlank { tag.ifBlank { "новая" } },
                 versionCode = effectiveVersionCode,
-                apkUrl = asset.optString("browser_download_url"),
-                assetName = asset.optString("name"),
-                assetSize = asset.optLong("size", 0L),
-                releaseUrl = json.optString("html_url"),
+                apkUrl = apkUrl,
+                assetName = asset?.optString("name").orEmpty(),
+                assetSize = asset?.optLong("size", 0L) ?: 0L,
+                releaseUrl = releaseUrl,
                 notes = body,
             )
         }

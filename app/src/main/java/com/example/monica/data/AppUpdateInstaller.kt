@@ -35,6 +35,13 @@ class AppUpdateInstaller(
         appContext.startActivity(intent)
     }
 
+    fun openReleasePage(releaseUrl: String) {
+        val url = releaseUrl.trim().ifBlank { return }
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        appContext.startActivity(intent)
+    }
+
     fun downloadApk(
         info: AppUpdateInfo,
         onProgress: (Float) -> Unit,
