@@ -283,6 +283,35 @@ class MonicaApi(private val sessionStore: SessionStore) {
         return Companion.parseChat(JSONObject(text))
     }
 
+    /**
+     * Загружает персональный фон чата (как на вебе: multipart `photo`).
+     * @return pair (background MinIO path, background_url)
+     */
+    fun uploadChatBackground(
+        chatId: String,
+        bytes: ByteArray,
+        fileName: String,
+        mimeType: String,
+    ): Pair<String, String?> {
+        val safeMime = mimeType.ifBlank { "image/jpeg" }.lowercase()
+        val safeName = fileName.ifBlank { "background.jpg" }
+        val body = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart(
+                "photo",
+                safeName,
+                bytes.toRequestBody(safeMime.toMediaType()),
+            )
+            .build()
+        val json = authPost("/api/chats/$chatId/background/", body)
+        return json.optString("background").orEmpty() to
+            json.optString("background_url").takeIf { it.isNotBlank() && it != "null" }
+    }
+
+    fun deleteChatBackground(chatId: String) {
+        authDelete("/api/chats/$chatId/background/")
+    }
+
     fun forwardMessages(
         targetChatId: String,
         sourceChatId: String,
@@ -985,6 +1014,8 @@ class MonicaApi(private val sessionStore: SessionStore) {
                 title = json.optString("title").takeIf { it.isNotBlank() && it != "null" },
                 photo = json.optString("photo").takeIf { it.isNotBlank() && it != "null" },
                 photoUrl = json.optString("photo_url").takeIf { it.isNotBlank() && it != "null" },
+                backgroundUrl = json.optString("background_url")
+                    .takeIf { it.isNotBlank() && it != "null" },
                 membersCount = json.optInt("members_count", members.size),
                 members = members,
             )

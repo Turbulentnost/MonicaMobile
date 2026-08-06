@@ -67,6 +67,7 @@ import com.example.monica.ui.components.AppIcon
 import com.example.monica.ui.components.MainMenuIcon
 import com.example.monica.ui.components.MonicaDrawerContent
 import com.example.monica.ui.components.NeonInviteBorder
+import com.example.monica.ui.components.NowPlayingStripHost
 import com.example.monica.ui.components.UserAvatar
 import com.example.monica.ui.util.TimeFormat
 import kotlinx.coroutines.delay
@@ -150,6 +151,7 @@ fun ChatListScreen(
         Scaffold(
             topBar = {
                 ChatListHeader(
+                    vm = vm,
                     query = query,
                     onQueryChange = { query = it },
                     unread = unread,
@@ -246,6 +248,7 @@ fun ChatListScreen(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ChatListHeader(
+    vm: MonicaViewModel,
     query: String,
     onQueryChange: (String) -> Unit,
     unread: Int,
@@ -362,6 +365,7 @@ private fun ChatListHeader(
                     }
                 }
             }
+            NowPlayingStripHost(vm = vm)
             HorizontalDivider(
                 thickness = 0.5.dp,
                 color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),

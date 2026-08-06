@@ -1,5 +1,8 @@
 package com.example.monica.ui.screens
 
+import android.provider.OpenableColumns
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -17,19 +20,24 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.InsertDriveFile
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Tab
@@ -42,10 +50,12 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -57,6 +67,7 @@ import com.example.monica.data.UserProfile
 import com.example.monica.ui.MonicaViewModel
 import com.example.monica.ui.components.CachedMediaImage
 import com.example.monica.ui.components.MonicaAppBar
+import com.example.monica.ui.components.NowPlayingStripHost
 import com.example.monica.ui.components.PhotoLightbox
 import com.example.monica.ui.components.PhotoViewerItem
 import com.example.monica.ui.components.UserAvatar
@@ -64,8 +75,14 @@ import com.example.monica.ui.components.rememberChatFileDownloader
 import com.example.monica.ui.util.TimeFormat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.withContext
 import java.util.Locale
+import kotlin.math.min
+
+private const val CHAT_BG_MAX_BYTES = 10 * 1024 * 1024
+/** Сколько превью Members подгружаем за один пул (сначала самые новые сверху). */
+private const val PHOTO_POOL_SIZE = 20
 
 private data class SharedFileRow(
     val id: String,
@@ -94,10 +111,13 @@ fun ChatDetailsScreen(
 ) {
     val chats by vm.chats.collectAsStateWithLifecycle()
     val onlineIds by vm.onlineIds.collectAsStateWithLifecycle()
+    val bgBusy by vm.chatBackgroundBusy.collectAsStateWithLifecycle()
     val chat = chats.find { it.id == chatId }
     val partner = chat?.partner
     val isGroup = chat?.isGroup == true
     val isOnline = onlineIds.contains(partner?.id)
+    val hasCustomBg = !chat?.backgroundUrl.isNullOrBlank()
+    val context = LocalContext.current
 
     var tabIndex by remember { mutableIntStateOf(0) }
     var fileMessages by remember { mutableStateOf<List<MessageItem>>(emptyList()) }
@@ -109,7 +129,38 @@ fun ChatDetailsScreen(
     var searchLoading by remember { mutableStateOf(false) }
     var searchError by remember { mutableStateOf<String?>(null) }
     var lightboxIndex by remember { mutableStateOf<Int?>(null) }
+    var menuExpanded by remember { mutableStateOf(false) }
+    /** Сколько фото из Members уже разрешено качать (пулы по PHOTO_POOL_SIZE, с новых). */
+    var photoPoolLimit by remember(chatId) { mutableIntStateOf(PHOTO_POOL_SIZE) }
+    val listState = rememberLazyListState()
     val downloadChatFile = rememberChatFileDownloader(vm.api)
+
+    val bgPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val resolver = context.contentResolver
+        val mime = resolver.getType(uri) ?: "image/jpeg"
+        val name = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+            ?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    cursor.getString(cursor.getColumnIndexOrThrow(OpenableColumns.DISPLAY_NAME))
+                } else null
+            } ?: "background.jpg"
+        val bytes = runCatching {
+            resolver.openInputStream(uri)?.use { it.readBytes() }
+        }.getOrNull()
+        val looksLikeImage = mime.startsWith("image/") ||
+            name.lowercase(Locale.ROOT).matches(Regex(".*\\.(jpe?g|png|webp|gif)$"))
+        if (
+            bytes != null &&
+            bytes.isNotEmpty() &&
+            bytes.size <= CHAT_BG_MAX_BYTES &&
+            looksLikeImage
+        ) {
+            vm.setChatBackground(chatId, bytes, name, mime)
+        }
+    }
 
     LaunchedEffect(chatId) {
         filesLoading = true
@@ -152,29 +203,106 @@ fun ChatDetailsScreen(
     }
 
     val files = remember(fileMessages) { flattenFiles(fileMessages) }
+    // API уже отдаёт -sent_at; flattenPhotos сохраняет порядок — сверху самые новые.
     val photos = remember(fileMessages) { flattenPhotos(fileMessages) }
     val visibleFiles = if (showAllFiles) files else files.take(5)
     val searchActive = searchQuery.trim().length >= 2
+    val pooledPhotos = remember(photos, photoPoolLimit) {
+        photos.take(photoPoolLimit.coerceAtLeast(0))
+    }
+    val photoRows = remember(pooledPhotos) { pooledPhotos.chunked(3) }
+
+    // При входе на Members начинаем с первого пула самых новых фото.
+    LaunchedEffect(tabIndex, chatId) {
+        if (tabIndex == 1) {
+            photoPoolLimit = PHOTO_POOL_SIZE
+        }
+    }
+
+    // Догружаем следующий пул из 20, когда пользователь доскроллил почти до конца списка.
+    LaunchedEffect(tabIndex, photos.size, photoPoolLimit) {
+        if (tabIndex != 1 || photos.isEmpty()) return@LaunchedEffect
+        snapshotFlow {
+            val info = listState.layoutInfo
+            val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: 0
+            val total = info.totalItemsCount
+            lastVisible to total
+        }
+            .distinctUntilChanged()
+            .collect { (lastVisible, total) ->
+                if (total <= 0) return@collect
+                if (lastVisible < total - 2) return@collect
+                if (photoPoolLimit >= photos.size) return@collect
+                photoPoolLimit = min(photoPoolLimit + PHOTO_POOL_SIZE, photos.size)
+            }
+    }
 
     Scaffold(
         topBar = {
-            MonicaAppBar(
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")
-                    }
-                },
-                title = {
-                    Text(
-                        "Детали",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                },
-            )
+            Column(modifier = Modifier.fillMaxWidth()) {
+                MonicaAppBar(
+                    navigationIcon = {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")
+                        }
+                    },
+                    title = {
+                        Text(
+                            "Детали",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    },
+                    actions = {
+                        Box {
+                            IconButton(
+                                onClick = { menuExpanded = true },
+                                enabled = !bgBusy,
+                            ) {
+                                if (bgBusy) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(20.dp),
+                                        strokeWidth = 2.dp,
+                                    )
+                                } else {
+                                    Icon(
+                                        Icons.Filled.MoreVert,
+                                        contentDescription = "Меню оформления",
+                                    )
+                                }
+                            }
+                            DropdownMenu(
+                                expanded = menuExpanded,
+                                onDismissRequest = { menuExpanded = false },
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("Изменить фон") },
+                                    onClick = {
+                                        menuExpanded = false
+                                        bgPicker.launch("image/*")
+                                    },
+                                    enabled = !bgBusy,
+                                )
+                                if (hasCustomBg) {
+                                    DropdownMenuItem(
+                                        text = { Text("Сбросить фон") },
+                                        onClick = {
+                                            menuExpanded = false
+                                            vm.clearChatBackground(chatId)
+                                        },
+                                        enabled = !bgBusy,
+                                    )
+                                }
+                            }
+                        }
+                    },
+                )
+                NowPlayingStripHost(vm = vm)
+            }
         },
     ) { padding ->
         LazyColumn(
+            state = listState,
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding),
@@ -205,6 +333,15 @@ fun ChatDetailsScreen(
                         placeholder = { Text("Найти сообщение…") },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        shape = RoundedCornerShape(24.dp),
+                        textStyle = MaterialTheme.typography.bodyMedium,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                            disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                            focusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
+                            unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
+                        ),
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
@@ -307,18 +444,80 @@ fun ChatDetailsScreen(
                     }
                 }
                 1 -> {
-                    item {
-                        PhotosSection(
-                            photos = photos,
-                            loading = filesLoading,
-                            error = filesError,
-                            vm = vm,
-                            onOpen = { photo ->
-                                lightboxIndex = photos.indexOfFirst {
-                                    it.path == photo.path && it.contentUrl == photo.contentUrl
-                                }.takeIf { it >= 0 } ?: 0
-                            },
-                        )
+                    when {
+                        filesLoading -> item {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(24.dp),
+                                contentAlignment = Alignment.Center,
+                            ) { CircularProgressIndicator() }
+                        }
+                        filesError != null -> item {
+                            Text(
+                                filesError!!,
+                                modifier = Modifier.padding(16.dp),
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                        photos.isEmpty() -> item {
+                            Text(
+                                "Фотографий пока нет",
+                                modifier = Modifier.padding(16.dp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        else -> {
+                            item {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        "Фотографии",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
+                                    Text(
+                                        "${pooledPhotos.size}/${photos.size}",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                            items(
+                                items = photoRows,
+                                key = { row ->
+                                    row.joinToString("|") { it.path ?: it.contentUrl }
+                                },
+                            ) { row ->
+                                PhotoGridRow(
+                                    row = row,
+                                    vm = vm,
+                                    onOpen = { photo ->
+                                        lightboxIndex = photos.indexOfFirst {
+                                            it.path == photo.path &&
+                                                it.contentUrl == photo.contentUrl
+                                        }.takeIf { it >= 0 } ?: 0
+                                    },
+                                )
+                            }
+                            if (photoPoolLimit < photos.size) {
+                                item(key = "photo-pool-loading") {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(16.dp),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        CircularProgressIndicator(strokeWidth = 2.dp)
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 else -> item {
@@ -475,74 +674,47 @@ private fun FileRow(
 }
 
 @Composable
-private fun PhotosSection(
-    photos: List<SharedPhotoRow>,
-    loading: Boolean,
-    error: String?,
+private fun PhotoGridRow(
+    row: List<SharedPhotoRow>,
     vm: MonicaViewModel,
     onOpen: (SharedPhotoRow) -> Unit,
 ) {
-    when {
-        loading -> Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(24.dp),
-            contentAlignment = Alignment.Center,
-        ) { CircularProgressIndicator() }
-        error != null -> Text(
-            error,
-            modifier = Modifier.padding(16.dp),
-            color = MaterialTheme.colorScheme.error,
-        )
-        photos.isEmpty() -> Text(
-            "Фотографий пока нет",
-            modifier = Modifier.padding(16.dp),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        else -> Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            photos.chunked(3).forEach { row ->
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    row.forEach { photo ->
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .aspectRatio(1f)
-                                .clip(RoundedCornerShape(10.dp))
-                                .border(
-                                    1.dp,
-                                    MaterialTheme.colorScheme.outlineVariant,
-                                    RoundedCornerShape(10.dp),
-                                )
-                                .clickable { onOpen(photo) },
-                        ) {
-                            CachedMediaImage(
-                                message = MessageItem(
-                                    id = photo.messageId,
-                                    sender = null,
-                                    messageType = "photo",
-                                    content = photo.path.orEmpty(),
-                                    contentUrl = photo.contentUrl,
-                                    fileName = photo.fileName,
-                                    sentAt = "",
-                                ),
-                                api = vm.api,
-                                modifier = Modifier.fillMaxSize(),
-                            )
-                        }
-                    }
-                    repeat(3 - row.size) {
-                        Spacer(modifier = Modifier.weight(1f))
-                    }
-                }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 3.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        row.forEach { photo ->
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .aspectRatio(1f)
+                    .clip(RoundedCornerShape(10.dp))
+                    .border(
+                        1.dp,
+                        MaterialTheme.colorScheme.outlineVariant,
+                        RoundedCornerShape(10.dp),
+                    )
+                    .clickable { onOpen(photo) },
+            ) {
+                CachedMediaImage(
+                    message = MessageItem(
+                        id = photo.messageId,
+                        sender = null,
+                        messageType = "photo",
+                        content = photo.path.orEmpty(),
+                        contentUrl = photo.contentUrl,
+                        fileName = photo.fileName,
+                        sentAt = "",
+                    ),
+                    api = vm.api,
+                    modifier = Modifier.fillMaxSize(),
+                )
             }
+        }
+        repeat(3 - row.size) {
+            Spacer(modifier = Modifier.weight(1f))
         }
     }
 }

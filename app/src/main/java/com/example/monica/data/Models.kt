@@ -37,6 +37,8 @@ data class ChatSummary(
     val title: String? = null,
     val photo: String? = null,
     val photoUrl: String? = null,
+    /** Персональный фон чата (presigned URL) для текущего пользователя. */
+    val backgroundUrl: String? = null,
     val membersCount: Int = 0,
     val members: List<UserProfile> = emptyList(),
 ) {

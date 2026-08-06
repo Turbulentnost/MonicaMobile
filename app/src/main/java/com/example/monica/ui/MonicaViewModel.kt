@@ -12,6 +12,7 @@ import com.example.monica.data.AppUpdateInstaller
 import com.example.monica.data.AvatarCache
 import com.example.monica.data.CallUiState
 import com.example.monica.data.CallUiStatus
+import com.example.monica.data.ChatBackgroundCache
 import com.example.monica.data.ChatSummary
 import com.example.monica.data.MediaImageCache
 import com.example.monica.data.MessageItem
@@ -164,6 +165,9 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _aiLoading = MutableStateFlow(false)
     val aiLoading: StateFlow<Boolean> = _aiLoading.asStateFlow()
+
+    private val _chatBackgroundBusy = MutableStateFlow(false)
+    val chatBackgroundBusy: StateFlow<Boolean> = _chatBackgroundBusy.asStateFlow()
 
     private val updateChecker = AppUpdateChecker(session)
     private val updateInstaller = AppUpdateInstaller(app)
@@ -716,6 +720,60 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
                 onOpened(chat.id)
             } catch (e: Exception) {
                 _error.value = e.message
+            }
+        }
+    }
+
+    fun setChatBackground(
+        chatId: String,
+        bytes: ByteArray,
+        fileName: String,
+        mimeType: String,
+        onDone: () -> Unit = {},
+    ) {
+        if (chatId.isBlank() || bytes.isEmpty()) return
+        viewModelScope.launch {
+            _chatBackgroundBusy.value = true
+            try {
+                val (_, url) = withContext(Dispatchers.IO) {
+                    api.uploadChatBackground(chatId, bytes, fileName, mimeType)
+                }
+                withContext(Dispatchers.IO) {
+                    ChatBackgroundCache.putBytes(getApplication(), chatId, bytes, url)
+                }
+                _chats.update { list ->
+                    list.map { chat ->
+                        if (chat.id == chatId) chat.copy(backgroundUrl = url) else chat
+                    }
+                }
+                onDone()
+            } catch (e: Exception) {
+                _error.value = e.message ?: "Не удалось загрузить фон"
+            } finally {
+                _chatBackgroundBusy.value = false
+            }
+        }
+    }
+
+    fun clearChatBackground(chatId: String, onDone: () -> Unit = {}) {
+        if (chatId.isBlank()) return
+        viewModelScope.launch {
+            _chatBackgroundBusy.value = true
+            try {
+                withContext(Dispatchers.IO) {
+                    api.deleteChatBackground(chatId)
+                    ChatBackgroundCache.invalidate(getApplication(), chatId)
+                }
+                _chats.update { list ->
+                    list.map { chat ->
+                        if (chat.id == chatId) chat.copy(backgroundUrl = null) else chat
+                    }
+                }
+                onDone()
+            } catch (e: Exception) {
+                _error.value = e.message ?: "Не удалось сбросить фон"
+            } finally {
+                _chatBackgroundBusy.value = false
             }
         }
     }

@@ -60,6 +60,7 @@ import androidx.navigation.navArgument
 import com.example.monica.data.AppUpdateInfo
 import com.example.monica.data.SessionStore
 import com.example.monica.data.ws.PresenceHub
+import com.example.monica.media.ActiveMediaSessionRepository
 import com.example.monica.push.MonicaDaemonService
 import com.example.monica.ui.MonicaViewModel
 import com.example.monica.ui.components.CallHost
@@ -112,6 +113,7 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         vm.onMainActivityResumed()
+        ActiveMediaSessionRepository.get(this).start()
         // UI открыт — online + демон без постоянного уведомления.
         if (SessionStore(this).isLoggedIn) {
             PresenceHub.onAppForeground(this)
@@ -121,6 +123,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         // Свернули приложение — offline, демон продолжает работать для FCM/звонков.
+        ActiveMediaSessionRepository.get(this).stop()
         if (SessionStore(this).isLoggedIn) {
             PresenceHub.onAppBackground()
             MonicaDaemonService.notifyUiBackground(this)
@@ -472,7 +475,7 @@ private fun BoxScope.UpdateAvailableBanner(
         modifier = Modifier
             .align(Alignment.TopCenter)
             .statusBarsPadding()
-            .padding(horizontal = 12.dp, top = 10.dp)
+            .padding(start = 12.dp, top = 10.dp, end = 12.dp)
             .zIndex(18f),
         enter = fadeIn() + slideInVertically { -it },
         exit = fadeOut() + slideOutVertically { -it },

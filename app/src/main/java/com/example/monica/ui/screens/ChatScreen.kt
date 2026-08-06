@@ -129,6 +129,7 @@ import coil.request.videoFrameMillis
 import com.example.monica.BuildConfig
 import com.example.monica.R
 import com.example.monica.data.CallUiStatus
+import com.example.monica.data.ChatBackgroundCache
 import com.example.monica.data.DeliveryStatus
 import com.example.monica.data.MediaUrls
 import com.example.monica.data.MessageItem
@@ -145,6 +146,7 @@ import com.example.monica.ui.components.LinkAwareText
 import com.example.monica.ui.components.MessagePhotoGallery
 import com.example.monica.ui.components.MessageSelectionToolbar
 import com.example.monica.ui.components.MonicaAppBar
+import com.example.monica.ui.components.NowPlayingStripHost
 import com.example.monica.ui.components.PhotoLightbox
 import com.example.monica.ui.components.PhotoViewerItem
 import com.example.monica.ui.components.UploadProgressOverlay
@@ -267,6 +269,7 @@ fun ChatScreen(
     }
     val headerTitle = chat?.displayTitle ?: "—"
     val headerAvatar = chat?.avatarUser()
+    val backgroundUrl = chat?.backgroundUrl
     val incomingInvite = incomingInvites[chatId]
     val isOutgoingPending = outgoingPending.containsKey(chatId)
     val isPrivateActiveHere = privateSessionId != null && privateChatId == chatId
@@ -276,6 +279,20 @@ fun ChatScreen(
     val canStartCall = !isGroup && !callBusy && partner != null
     val canStartVideo = canStartCall && vm.hasCameraDevice()
     val downloadChatFile = rememberChatFileDownloader(vm.api)
+
+    var backgroundFile by remember(chatId) {
+        mutableStateOf(ChatBackgroundCache.getCached(context, chatId, backgroundUrl))
+    }
+    LaunchedEffect(chatId, backgroundUrl) {
+        if (backgroundUrl.isNullOrBlank()) {
+            backgroundFile = null
+            return@LaunchedEffect
+        }
+        backgroundFile = ChatBackgroundCache.getCached(context, chatId, backgroundUrl)
+            ?: withContext(Dispatchers.IO) {
+                ChatBackgroundCache.getOrFetch(context, vm.api, chatId, backgroundUrl)
+            }
+    }
 
     var pendingStartMode by remember { mutableStateOf<String?>(null) }
     val callPermLauncher = rememberLauncherForActivityResult(
@@ -398,92 +415,120 @@ fun ChatScreen(
         }
     }
 
+    val hasCustomBackground = backgroundFile != null
+    Box(modifier = Modifier.fillMaxSize()) {
+        if (hasCustomBackground) {
+            AsyncImage(
+                model = ImageRequest.Builder(context)
+                    .data(backgroundFile)
+                    .crossfade(true)
+                    .build(),
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+            )
+            // ~52% затемнение, как на вебе (rgba(4, 8, 16, 0.52))
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0x85040810)),
+            )
+        }
+
     Scaffold(
+        containerColor = if (hasCustomBackground) {
+            Color.Transparent
+        } else {
+            MaterialTheme.colorScheme.background
+        },
         topBar = {
-            MonicaAppBar(
-                navigationIcon = {
-                    IconButton(
-                        onClick = onBack,
-                        modifier = Modifier.size(40.dp),
-                    ) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")
-                    }
-                },
-                title = {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(10.dp))
-                            .clickable(onClick = onOpenDetails)
-                            .padding(end = 4.dp),
-                    ) {
-                        UserAvatar(
-                            headerAvatar,
-                            size = 30.dp,
-                            showOnline = !isGroup,
-                            isOnline = isOnline,
-                        )
-                        Column(verticalArrangement = Arrangement.Center) {
-                            Text(
-                                headerTitle,
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
+            Column(modifier = Modifier.fillMaxWidth()) {
+                MonicaAppBar(
+                    navigationIcon = {
+                        IconButton(
+                            onClick = onBack,
+                            modifier = Modifier.size(40.dp),
+                        ) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")
+                        }
+                    },
+                    title = {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable(onClick = onOpenDetails)
+                                .padding(end = 4.dp),
+                        ) {
+                            UserAvatar(
+                                headerAvatar,
+                                size = 30.dp,
+                                showOnline = !isGroup,
+                                isOnline = isOnline,
                             )
-                            Text(
-                                statusText,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
+                            Column(verticalArrangement = Arrangement.Center) {
+                                Text(
+                                    headerTitle,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                )
+                                Text(
+                                    statusText,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                )
+                            }
+                        }
+                    },
+                    actions = {
+                        if (!isGroup) {
+                        IconButton(
+                            onClick = { requestStartCall("audio") },
+                            enabled = canStartCall,
+                            modifier = Modifier.size(40.dp),
+                        ) {
+                            Icon(
+                                Icons.Filled.Call,
+                                contentDescription = "Аудиозвонок",
+                                tint = if (canStartCall) {
+                                    MaterialTheme.colorScheme.onSurface
+                                } else {
+                                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                                },
                             )
                         }
-                    }
-                },
-                actions = {
-                    if (!isGroup) {
-                    IconButton(
-                        onClick = { requestStartCall("audio") },
-                        enabled = canStartCall,
-                        modifier = Modifier.size(40.dp),
-                    ) {
-                        Icon(
-                            Icons.Filled.Call,
-                            contentDescription = "Аудиозвонок",
-                            tint = if (canStartCall) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-                            },
+                        IconButton(
+                            onClick = { requestStartCall("video") },
+                            enabled = canStartVideo,
+                            modifier = Modifier.size(40.dp),
+                        ) {
+                            Icon(
+                                Icons.Filled.Videocam,
+                                contentDescription = "Видеозвонок",
+                                tint = if (canStartVideo) {
+                                    MaterialTheme.colorScheme.onSurface
+                                } else {
+                                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                                },
+                            )
+                        }
+                        PrivateChatActionButton(
+                            hasIncomingInvite = incomingInvite != null,
+                            isOutgoingPending = isOutgoingPending,
+                            isActive = isPrivateActiveHere,
+                            onInvite = { vm.invitePrivate(chatId) },
+                            onAccept = { vm.acceptInviteForChat(chatId) },
+                            onCancelOutgoing = { vm.cancelOutgoingInvite(chatId) },
+                            onReopen = { vm.reopenPrivate() },
                         )
-                    }
-                    IconButton(
-                        onClick = { requestStartCall("video") },
-                        enabled = canStartVideo,
-                        modifier = Modifier.size(40.dp),
-                    ) {
-                        Icon(
-                            Icons.Filled.Videocam,
-                            contentDescription = "Видеозвонок",
-                            tint = if (canStartVideo) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-                            },
-                        )
-                    }
-                    PrivateChatActionButton(
-                        hasIncomingInvite = incomingInvite != null,
-                        isOutgoingPending = isOutgoingPending,
-                        isActive = isPrivateActiveHere,
-                        onInvite = { vm.invitePrivate(chatId) },
-                        onAccept = { vm.acceptInviteForChat(chatId) },
-                        onCancelOutgoing = { vm.cancelOutgoingInvite(chatId) },
-                        onReopen = { vm.reopenPrivate() },
-                    )
-                    }
-                },
-            )
+                        }
+                    },
+                )
+                NowPlayingStripHost(vm = vm)
+            }
         },
     ) { padding ->
         Column(
@@ -632,6 +677,7 @@ fun ChatScreen(
             }
         }
     }
+    } // wallpaper Box
 
     if (forwardPickerVisible) {
         ForwardPickerSheet(
