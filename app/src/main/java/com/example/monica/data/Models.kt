@@ -32,7 +32,33 @@ data class ChatSummary(
     val partner: UserProfile?,
     val lastMessage: MessageItem?,
     val updatedAt: String? = null,
-)
+    val chatType: String = "direct",
+    val isGroup: Boolean = false,
+    val title: String? = null,
+    val photo: String? = null,
+    val photoUrl: String? = null,
+    val membersCount: Int = 0,
+    val members: List<UserProfile> = emptyList(),
+) {
+    val displayTitle: String
+        get() = when {
+            isGroup -> title?.takeIf { it.isNotBlank() } ?: "Группа"
+            else -> partner?.displayName ?: "—"
+        }
+
+    /** Для UserAvatar / AvatarCache — синтетический профиль группы (как на вебе). */
+    fun avatarUser(): UserProfile? {
+        if (!isGroup) return partner
+        return UserProfile(
+            id = "group-$id",
+            nickname = displayTitle,
+            firstName = displayTitle.take(2),
+            photo = photo,
+            photoUrl = photoUrl,
+            updatedAt = updatedAt,
+        )
+    }
+}
 
 data class MessageAttachment(
     val path: String? = null,
@@ -224,3 +250,16 @@ fun AppNotification.isPendingPrivateInvite(): Boolean =
     type == "private_invite" &&
         payload["resolved"].isNullOrBlank() &&
         !payload["session_id"].isNullOrBlank()
+
+data class AiStyleProfile(
+    val enabled: Boolean = true,
+    val samplesCount: Int = 0,
+)
+
+data class AiCompleteResult(
+    val suggestion: String = "",
+    val disabled: Boolean = false,
+    val rateLimited: Boolean = false,
+    val error: Boolean = false,
+    val detail: String? = null,
+)

@@ -13,6 +13,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -22,6 +24,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -42,6 +45,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -49,6 +53,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.outlined.Close
@@ -69,6 +74,7 @@ import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedButton
@@ -87,6 +93,8 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -97,6 +105,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -112,27 +121,40 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import coil.ImageLoader
+import coil.compose.AsyncImage
+import coil.decode.VideoFrameDecoder
+import coil.request.ImageRequest
+import coil.request.videoFrameMillis
+import com.example.monica.BuildConfig
 import com.example.monica.R
 import com.example.monica.data.CallUiStatus
 import com.example.monica.data.DeliveryStatus
+import com.example.monica.data.MediaUrls
 import com.example.monica.data.MessageItem
 import com.example.monica.data.MonicaApi
+import com.example.monica.data.isVideoMime
 import com.example.monica.ui.MonicaViewModel
 import com.example.monica.ui.components.AppIcon
-import com.example.monica.ui.components.CachedMediaImage
+import com.example.monica.ui.components.AttachmentPickerSheet
 import com.example.monica.ui.components.CodeViewerView
 import com.example.monica.ui.components.EmojiPicker
 import com.example.monica.ui.components.ForwardedBundleView
 import com.example.monica.ui.components.ForwardPickerSheet
 import com.example.monica.ui.components.LinkAwareText
+import com.example.monica.ui.components.MessagePhotoGallery
 import com.example.monica.ui.components.MessageSelectionToolbar
 import com.example.monica.ui.components.MonicaAppBar
+import com.example.monica.ui.components.PhotoLightbox
+import com.example.monica.ui.components.PhotoViewerItem
 import com.example.monica.ui.components.UploadProgressOverlay
 import com.example.monica.ui.components.UserAvatar
+import com.example.monica.ui.components.VideoPlayerDialog
 import com.example.monica.ui.components.VoiceMessagePlayer
 import com.example.monica.ui.components.VoiceRecorderController
 import com.example.monica.ui.components.formatVoiceDuration
 import com.example.monica.ui.components.rememberChatFileDownloader
+import com.example.monica.ui.components.toPhotoViewerItems
 import com.example.monica.ui.util.TimeFormat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -142,6 +164,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import java.io.File
+import android.net.Uri
 
 private data class CodeChrome(
     val bg: Color,
@@ -221,22 +244,36 @@ fun ChatScreen(
     val replyTo by vm.replyTo.collectAsStateWithLifecycle()
     val forwardBusy by vm.forwardBusy.collectAsStateWithLifecycle()
     val forwardSearchResults by vm.searchResults.collectAsStateWithLifecycle()
+    val aiStyleEnabled by vm.aiStyleEnabled.collectAsStateWithLifecycle()
+    val aiReasonActive by vm.aiReasonActive.collectAsStateWithLifecycle()
+    val aiSuggestion by vm.aiSuggestion.collectAsStateWithLifecycle()
+    val aiLoading by vm.aiLoading.collectAsStateWithLifecycle()
     val myId = vm.session.userId
     val context = LocalContext.current
     val activePendingForward = pendingForward?.takeIf { it.targetChatId == chatId }
 
     val chat = chats.find { it.id == chatId }
+    val isGroup = chat?.isGroup == true
     val partner = chat?.partner
     val isOnline = onlineIds.contains(partner?.id)
     val lastSeen = lastSeenMap[partner?.id] ?: partner?.lastSeenAt
-    val statusText = if (isOnline) "в сети" else TimeFormat.lastSeen(lastSeen)
+    val statusText = when {
+        isGroup -> {
+            val count = chat?.membersCount ?: 0
+            if (count > 0) "$count участников" else "Группа"
+        }
+        isOnline -> "в сети"
+        else -> TimeFormat.lastSeen(lastSeen)
+    }
+    val headerTitle = chat?.displayTitle ?: "—"
+    val headerAvatar = chat?.avatarUser()
     val incomingInvite = incomingInvites[chatId]
     val isOutgoingPending = outgoingPending.containsKey(chatId)
     val isPrivateActiveHere = privateSessionId != null && privateChatId == chatId
     val callBusy = callState.status !in listOf(CallUiStatus.Idle, CallUiStatus.Ended)
     // Presence выключается, когда приложение собеседника свёрнуто, но
     // входящий звонок всё равно доставляется через FCM и фоновый демон.
-    val canStartCall = !callBusy && partner != null
+    val canStartCall = !isGroup && !callBusy && partner != null
     val canStartVideo = canStartCall && vm.hasCameraDevice()
     val downloadChatFile = rememberChatFileDownloader(vm.api)
 
@@ -309,6 +346,10 @@ fun ChatScreen(
         onDispose { }
     }
 
+    LaunchedEffect(chatId) {
+        vm.loadAiStyle()
+    }
+
     val dayGroups = remember(messages) {
         messages.groupBy { TimeFormat.dayKey(it.sentAt) }
             .entries
@@ -377,10 +418,15 @@ fun ChatScreen(
                             .clickable(onClick = onOpenDetails)
                             .padding(end = 4.dp),
                     ) {
-                        UserAvatar(partner, size = 30.dp, showOnline = true, isOnline = isOnline)
+                        UserAvatar(
+                            headerAvatar,
+                            size = 30.dp,
+                            showOnline = !isGroup,
+                            isOnline = isOnline,
+                        )
                         Column(verticalArrangement = Arrangement.Center) {
                             Text(
-                                partner?.displayName ?: "—",
+                                headerTitle,
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.SemiBold,
                                 maxLines = 1,
@@ -395,6 +441,7 @@ fun ChatScreen(
                     }
                 },
                 actions = {
+                    if (!isGroup) {
                     IconButton(
                         onClick = { requestStartCall("audio") },
                         enabled = canStartCall,
@@ -434,6 +481,7 @@ fun ChatScreen(
                         onCancelOutgoing = { vm.cancelOutgoingInvite(chatId) },
                         onReopen = { vm.reopenPrivate() },
                     )
+                    }
                 },
             )
         },
@@ -516,6 +564,7 @@ fun ChatScreen(
                     onTextChange = {
                         input = it
                         vm.onComposerChange(it)
+                        vm.onAiDraftChange(it, chatId)
                     },
                     loading = loading || forwardBusy,
                     forwardingMode = activePendingForward != null,
@@ -524,6 +573,7 @@ fun ChatScreen(
                     onCancelForward = {
                         vm.cancelPendingForward()
                         input = ""
+                        vm.onAiDraftChange("", chatId)
                     },
                     onCancelReply = vm::cancelReply,
                     onSendText = {
@@ -533,6 +583,7 @@ fun ChatScreen(
                             vm.sendMessage(input)
                             input = ""
                         }
+                        vm.onAiDraftChange("", chatId)
                     },
                     onOpenCode = {
                         codeMode = true
@@ -543,6 +594,9 @@ fun ChatScreen(
                     },
                     onSendFile = { name, bytes, mime ->
                         vm.sendUploadedFile(chatId, name, bytes, mime)
+                    },
+                    onSendLocationText = { locationText ->
+                        vm.sendMessage(locationText)
                     },
                     onSendVoice = { file, waveform, durationMs ->
                         val bytes = runCatching { file.readBytes() }.getOrNull()
@@ -559,6 +613,19 @@ fun ChatScreen(
                             }
                         } else {
                             file.delete()
+                        }
+                    },
+                    aiStyleEnabled = aiStyleEnabled,
+                    aiReasonActive = aiReasonActive,
+                    aiSuggestion = aiSuggestion,
+                    aiLoading = aiLoading,
+                    onToggleAiReason = { vm.toggleAiReason(input, chatId) },
+                    onAcceptAiSuggestion = {
+                        val next = vm.acceptAiSuggestion(input)
+                        if (next != null) {
+                            input = next
+                            vm.onComposerChange(next)
+                            vm.onAiDraftChange(next, chatId)
                         }
                     },
                 )
@@ -607,13 +674,22 @@ private fun MessageComposer(
     onSendText: () -> Unit,
     onOpenCode: () -> Unit,
     onSendFile: (name: String, bytes: ByteArray, mime: String) -> Unit,
+    onSendLocationText: (String) -> Unit = {},
     onSendVoice: (file: File, waveform: List<Float>, durationMs: Long) -> Unit,
+    aiStyleEnabled: Boolean = false,
+    aiReasonActive: Boolean = false,
+    aiSuggestion: String = "",
+    aiLoading: Boolean = false,
+    onToggleAiReason: () -> Unit = {},
+    onAcceptAiSuggestion: () -> Unit = {},
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val recorder = remember { VoiceRecorderController(context.applicationContext) }
     var recording by remember { mutableStateOf(false) }
     var cancelled by remember { mutableStateOf(false) }
     var emojiPickerVisible by remember { mutableStateOf(false) }
+    var attachmentSheetVisible by remember { mutableStateOf(false) }
     var elapsedMs by remember { mutableLongStateOf(0L) }
     val levels = remember { mutableStateListOf<Float>() }
     val fullRecordingLevels = remember { mutableListOf<Float>() }
@@ -633,27 +709,40 @@ private fun MessageComposer(
         micPermission = granted
     }
 
-    val attachmentLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.GetContent(),
-    ) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        val resolver = context.contentResolver
-        val name = resolver.query(
-            uri,
-            arrayOf(OpenableColumns.DISPLAY_NAME),
-            null,
-            null,
-            null,
-        )?.use { cursor ->
-            if (cursor.moveToFirst()) {
-                cursor.getString(cursor.getColumnIndexOrThrow(OpenableColumns.DISPLAY_NAME))
-            } else null
-        } ?: "attachment-${System.currentTimeMillis()}"
-        val mime = resolver.getType(uri) ?: "application/octet-stream"
-        val bytes = runCatching {
-            resolver.openInputStream(uri)?.use { it.readBytes() }
-        }.getOrNull()
-        if (bytes != null) onSendFile(name, bytes, mime)
+    fun sendUri(uri: Uri, mimeHint: String?) {
+        scope.launch {
+            val resolver = context.contentResolver
+            val name = withContext(Dispatchers.IO) {
+                resolver.query(
+                    uri,
+                    arrayOf(OpenableColumns.DISPLAY_NAME),
+                    null,
+                    null,
+                    null,
+                )?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        cursor.getString(cursor.getColumnIndexOrThrow(OpenableColumns.DISPLAY_NAME))
+                    } else null
+                } ?: "attachment-${System.currentTimeMillis()}"
+            }
+            val mime = mimeHint?.takeIf { it.isNotBlank() }
+                ?: resolver.getType(uri)
+                ?: "application/octet-stream"
+            val bytes = withContext(Dispatchers.IO) {
+                runCatching { resolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
+            }
+            if (bytes != null) onSendFile(name, bytes, mime)
+        }
+    }
+
+    if (attachmentSheetVisible) {
+        AttachmentPickerSheet(
+            onDismiss = { attachmentSheetVisible = false },
+            onSendUris = { items ->
+                items.forEach { (uri, mime) -> sendUri(uri, mime) }
+            },
+            onSendLocationText = onSendLocationText,
+        )
     }
 
     DisposableEffect(Unit) {
@@ -834,7 +923,10 @@ private fun MessageComposer(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 IconButton(
-                    onClick = { attachmentLauncher.launch("*/*") },
+                    onClick = {
+                        emojiPickerVisible = false
+                        attachmentSheetVisible = true
+                    },
                     enabled = !loading && !recording && quotePreview == null,
                     modifier = Modifier.size(44.dp),
                 ) {
@@ -914,6 +1006,40 @@ private fun MessageComposer(
                     )
                 }
 
+                if (aiStyleEnabled && !recording) {
+                    IconButton(
+                        onClick = {
+                            emojiPickerVisible = false
+                            onToggleAiReason()
+                        },
+                        enabled = !loading,
+                        modifier = Modifier.size(44.dp),
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Filled.AutoAwesome,
+                                contentDescription = if (aiReasonActive) {
+                                    "Выключить Reason"
+                                } else {
+                                    "Включить Reason"
+                                },
+                                modifier = Modifier.size(24.dp),
+                                tint = when {
+                                    aiReasonActive || aiLoading -> MaterialTheme.colorScheme.primary
+                                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                            )
+                            if (aiLoading) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(34.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                        }
+                    }
+                }
+
                 if (text.isNotBlank() || forwardingMode) {
                     IconButton(
                         onClick = onSendText,
@@ -979,6 +1105,79 @@ private fun MessageComposer(
                             },
                         )
                     }
+                }
+            }
+        }
+
+        val showAiSuggestion = aiStyleEnabled && aiReasonActive && aiSuggestion.isNotBlank() && !recording
+        AnimatedVisibility(visible = showAiSuggestion) {
+            val holdProgress = remember(aiSuggestion) { Animatable(0f) }
+            val acceptLatest by rememberUpdatedState(onAcceptAiSuggestion)
+            val holdScope = rememberCoroutineScope()
+            val progress = holdProgress.value
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 6.dp)
+                    .pointerInput(aiSuggestion) {
+                        detectTapGestures(
+                            onPress = {
+                                holdProgress.snapTo(0f)
+                                val animJob = holdScope.launch {
+                                    holdProgress.animateTo(
+                                        targetValue = 1f,
+                                        animationSpec = tween(durationMillis = 2000),
+                                    )
+                                    acceptLatest()
+                                    holdProgress.snapTo(0f)
+                                }
+                                tryAwaitRelease()
+                                if (animJob.isActive) {
+                                    animJob.cancel()
+                                    holdProgress.animateTo(
+                                        targetValue = 0f,
+                                        animationSpec = tween(durationMillis = 160),
+                                    )
+                                }
+                            },
+                        )
+                    },
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(
+                    alpha = 0.55f + 0.35f * progress,
+                ),
+                tonalElevation = 1.dp,
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                ) {
+                    Text(
+                        text = "Удерживайте 2 сек, чтобы принять",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(
+                            alpha = 0.7f + 0.3f * progress,
+                        ),
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = aiSuggestion,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface.copy(
+                            alpha = 0.38f + 0.62f * progress,
+                        ),
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    LinearProgressIndicator(
+                        progress = { holdProgress.value },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(3.dp)
+                            .clip(RoundedCornerShape(99.dp)),
+                        color = MaterialTheme.colorScheme.primary,
+                        trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f),
+                    )
                 }
             }
         }
@@ -1296,7 +1495,11 @@ private fun codeLanguageOf(message: MessageItem): String? {
 private fun messagePreviewText(message: MessageItem): String = when (message.messageType) {
     "photo" -> message.caption ?: "Фотография"
     "voice" -> "Голосовое сообщение"
-    "file" -> message.fileName ?: "Файл"
+    "file" -> if (isVideoMime(message.mimeType, message.fileName)) {
+        message.fileName ?: "Видео"
+    } else {
+        message.fileName ?: "Файл"
+    }
     "forward" -> message.content.ifBlank { "Пересланные сообщения" }
     else -> message.content
 }
@@ -1382,6 +1585,19 @@ private fun MessageBubble(
         },
         label = "messageHighlight",
     )
+    var photoLightbox by remember(message.id) {
+        mutableStateOf<Pair<List<PhotoViewerItem>, Int>?>(null)
+    }
+
+    photoLightbox?.let { (items, index) ->
+        PhotoLightbox(
+            items = items,
+            initialIndex = index,
+            api = vm.api,
+            onDismiss = { photoLightbox = null },
+            onDownload = onDownloadFile,
+        )
+    }
 
     Row(
         modifier = Modifier
@@ -1457,13 +1673,18 @@ private fun MessageBubble(
             }
             when {
                 message.messageType == "photo" -> {
-                    CachedMediaImage(
+                    MessagePhotoGallery(
                         message = message,
                         api = vm.api,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(180.dp)
-                            .clip(RoundedCornerShape(10.dp)),
+                        contentColor = fg,
+                        onLongPress = onLongPress,
+                        onOpen = { index ->
+                            if (selectionMode) {
+                                onToggleSelection()
+                            } else if (!message.isUploading) {
+                                photoLightbox = message.toPhotoViewerItems() to index
+                            }
+                        },
                     )
                 }
                 codeLang != null -> {
@@ -1490,6 +1711,12 @@ private fun MessageBubble(
                         Text("Голосовое сообщение", color = fg)
                     }
                 }
+                message.messageType == "file" && isVideoMime(message.mimeType, message.fileName) -> {
+                    VideoMessageBody(
+                        message = message,
+                        onDownloadFile = onDownloadFile,
+                    )
+                }
                 message.messageType == "file" -> {
                     FileMessageBody(
                         message = message,
@@ -1504,6 +1731,7 @@ private fun MessageBubble(
                         api = vm.api,
                         foreground = fg,
                         onOpenOriginal = onOpenOriginal,
+                        onDownloadFile = onDownloadFile,
                     )
                 }
                 else -> LinkAwareText(
@@ -1661,6 +1889,89 @@ private fun MessageDeliveryStatus(
             status.label,
             style = MaterialTheme.typography.labelSmall,
             color = color,
+        )
+    }
+}
+
+@Composable
+private fun VideoMessageBody(
+    message: MessageItem,
+    onDownloadFile: (path: String?, url: String?, name: String, mime: String?) -> Unit,
+) {
+    val context = LocalContext.current
+    var playerOpen by remember(message.id) { mutableStateOf(false) }
+    val videoLoader = remember {
+        ImageLoader.Builder(context)
+            .components { add(VideoFrameDecoder.Factory()) }
+            .build()
+    }
+    val thumbUrl = MediaUrls.resolve(BuildConfig.API_BASE_URL, message.contentUrl)
+
+    if (playerOpen) {
+        VideoPlayerDialog(
+            apiBaseUrl = BuildConfig.API_BASE_URL.trimEnd('/'),
+            fileName = message.fileName,
+            objectPath = message.content.takeIf { it.isNotBlank() },
+            contentUrl = message.contentUrl,
+            mimeType = message.mimeType,
+            onDismiss = { playerOpen = false },
+            onDownload = onDownloadFile,
+        )
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(180.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(Color.Black.copy(alpha = 0.35f))
+            .clickable(enabled = !message.isUploading) { playerOpen = true },
+        contentAlignment = Alignment.Center,
+    ) {
+        if (!thumbUrl.isNullOrBlank()) {
+            AsyncImage(
+                model = ImageRequest.Builder(context)
+                    .data(thumbUrl)
+                    .videoFrameMillis(0)
+                    .crossfade(true)
+                    .build(),
+                imageLoader = videoLoader,
+                contentDescription = message.fileName ?: "Видео",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+        Box(
+            modifier = Modifier
+                .size(48.dp)
+                .clip(CircleShape)
+                .background(Color.Black.copy(alpha = 0.55f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Outlined.PlayArrow,
+                contentDescription = "Смотреть",
+                tint = Color.White,
+                modifier = Modifier.size(30.dp),
+            )
+        }
+        if (message.isUploading) {
+            UploadProgressOverlay(
+                progress = message.uploadProgress,
+                color = Color.White,
+                trackColor = Color.White.copy(alpha = 0.25f),
+            )
+        }
+        Text(
+            text = message.fileName ?: "Видео",
+            color = Color.White,
+            style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(8.dp)
+                .background(Color.Black.copy(alpha = 0.45f), RoundedCornerShape(6.dp))
+                .padding(horizontal = 6.dp, vertical = 3.dp),
+            maxLines = 1,
         )
     }
 }

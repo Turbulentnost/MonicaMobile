@@ -7,9 +7,11 @@ plugins {
 fun readApiBaseUrl(): String {
     val localFile = rootProject.file("local.properties")
     val fallback = "https://metamonica.ru"
+    // Старый VPS — больше не наш; домен metamonica.ru смотрит на 159.194.229.101.
+    val retiredHosts = listOf("159.194.232.74")
     if (!localFile.exists()) return fallback
     // Читаем без java.util.Properties — в AGP `java` уже занят
-    return localFile.readLines()
+    val raw = localFile.readLines()
         .asSequence()
         .map { it.trim() }
         .firstOrNull { it.startsWith("monica.api.base.url=") }
@@ -18,8 +20,17 @@ fun readApiBaseUrl(): String {
         // local.properties может экранировать ':' как '\:'.
         // В BuildConfig обратный слеш превращается в illegal escape.
         ?.replace("\\:", ":")
+        ?.trimEnd('/')
         ?.takeIf { it.isNotEmpty() }
         ?: fallback
+    if (retiredHosts.any { raw.contains(it) }) {
+        logger.warn(
+            "monica.api.base.url указывает на старый сервер ($raw). " +
+                "Используем $fallback",
+        )
+        return fallback
+    }
+    return raw
 }
 
 android {
@@ -36,6 +47,8 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         buildConfigField("String", "API_BASE_URL", "\"${readApiBaseUrl()}\"")
+        buildConfigField("String", "UPDATE_GITHUB_OWNER", "\"Turbulentnost\"")
+        buildConfigField("String", "UPDATE_GITHUB_REPO", "\"MonicaMobile\"")
     }
 
     buildTypes {
@@ -65,12 +78,17 @@ dependencies {
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.ui.tooling.preview)
+    implementation("androidx.compose.foundation:foundation")
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.coil.compose)
+    implementation("io.coil-kt:coil-video:2.7.0")
+    implementation("androidx.media3:media3-exoplayer:1.6.1")
+    implementation("androidx.media3:media3-ui:1.6.1")
+    implementation("androidx.media3:media3-common:1.6.1")
 
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.messaging)

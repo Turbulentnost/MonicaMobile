@@ -308,6 +308,10 @@ class CallController(
                 ensureLocalMedia(wantVideo = wantVideo, requiredVideo = wantVideo)
                 val initialRoute = if (wantVideo) CallAudioRoute.Speaker else CallAudioRoute.Earpiece
                 setAudioRoute(initialRoute)
+                // После аудиомаршрута — ringback «трррр», чтобы было слышно.
+                if (_state.value.status == CallUiStatus.Outgoing) {
+                    CallRingPlayer.startOutgoing(appContext)
+                }
                 val call = withContext(Dispatchers.IO) {
                     api.startCall(chatId, session.callClientInstanceId, mediaMode)
                 }
@@ -570,6 +574,7 @@ class CallController(
 
     private fun updateStatus(status: CallUiStatus) {
         _state.update { it.copy(status = status) }
+        syncOutgoingRing(status)
     }
 
     private fun updateCall(
@@ -579,19 +584,30 @@ class CallController(
     ) {
         mediaMode = call.mediaMode
         val partner = call.partner(session.userId)
+        val nextStatus = status ?: _state.value.status
         _state.update {
             it.copy(
                 call = call,
                 partner = partner,
                 mediaMode = call.mediaMode,
-                status = status ?: it.status,
+                status = nextStatus,
                 error = if (clearError) null else it.error,
                 bluetoothAvailable = isBluetoothAvailable(),
             )
         }
+        if (status != null) syncOutgoingRing(status)
+    }
+
+    private fun syncOutgoingRing(status: CallUiStatus) {
+        if (status == CallUiStatus.Outgoing) {
+            CallRingPlayer.startOutgoing(appContext)
+        } else {
+            CallRingPlayer.stopOutgoing()
+        }
     }
 
     private fun finish(message: String? = null) {
+        CallRingPlayer.stopOutgoing()
         closeMedia()
         mediaMode = "audio"
         currentRoute = CallAudioRoute.Earpiece

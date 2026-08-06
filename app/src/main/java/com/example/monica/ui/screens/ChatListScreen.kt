@@ -21,11 +21,15 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.GroupAdd
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -57,6 +61,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.monica.R
 import com.example.monica.data.AppNotification
 import com.example.monica.data.ChatSummary
+import com.example.monica.data.isVideoMime
 import com.example.monica.ui.MonicaViewModel
 import com.example.monica.ui.components.AppIcon
 import com.example.monica.ui.components.MainMenuIcon
@@ -73,6 +78,7 @@ fun ChatListScreen(
     vm: MonicaViewModel,
     onOpenChat: (String) -> Unit,
     onOpenNotifications: () -> Unit,
+    onCreateGroup: () -> Unit,
     onOpenProfile: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
@@ -150,6 +156,7 @@ fun ChatListScreen(
                     menuPlay = menuPlay,
                     onMenuClick = { openDrawer() },
                     onNotifications = onOpenNotifications,
+                    onCreateGroup = onCreateGroup,
                 )
             },
         ) { padding ->
@@ -222,8 +229,8 @@ fun ChatListScreen(
                         val hasInvite = incomingInvites.containsKey(chat.id)
                         ChatRow(
                             chat = chat,
-                            isOnline = onlineIds.contains(chat.partner?.id),
-                            hasPrivateInvite = hasInvite,
+                            isOnline = !chat.isGroup && onlineIds.contains(chat.partner?.id),
+                            hasPrivateInvite = !chat.isGroup && hasInvite,
                             isRinging = ringingChatId == chat.id,
                             isVideoRinging = ringingChatId == chat.id && callState.isVideo,
                             onClick = { onOpenChat(chat.id) },
@@ -245,7 +252,9 @@ private fun ChatListHeader(
     menuPlay: Boolean,
     onMenuClick: () -> Unit,
     onNotifications: () -> Unit,
+    onCreateGroup: () -> Unit,
 ) {
+    var createMenuOpen by remember { mutableStateOf(false) }
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surface,
@@ -303,6 +312,34 @@ private fun ChatListHeader(
                     ),
                 )
 
+                Box {
+                    IconButton(
+                        onClick = { createMenuOpen = true },
+                        modifier = Modifier.size(44.dp),
+                    ) {
+                        Icon(
+                            Icons.Outlined.Add,
+                            contentDescription = "Создать",
+                            tint = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = createMenuOpen,
+                        onDismissRequest = { createMenuOpen = false },
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Создать группу") },
+                            leadingIcon = {
+                                Icon(Icons.Outlined.GroupAdd, contentDescription = null)
+                            },
+                            onClick = {
+                                createMenuOpen = false
+                                onCreateGroup()
+                            },
+                        )
+                    }
+                }
+
                 IconButton(
                     onClick = onNotifications,
                     modifier = Modifier.size(44.dp),
@@ -355,6 +392,7 @@ private fun ChatRow(
         chat.lastMessage.messageType == "file" -> {
             val name = chat.lastMessage.fileName.orEmpty()
             when {
+                isVideoMime(chat.lastMessage.mimeType, name) -> "Видео: ${name.ifBlank { "клип" }}"
                 name.endsWith(".py") -> "Python: $name"
                 name.endsWith(".js") -> "JS: $name"
                 else -> "Файл: ${name.ifBlank { "вложение" }}"
@@ -363,6 +401,11 @@ private fun ChatRow(
         else -> chat.lastMessage.content.ifBlank { "Сообщение" }
     }
     val time = TimeFormat.chatListTime(chat.lastMessage?.sentAt ?: chat.updatedAt)
+    val subtitle = if (chat.isGroup && chat.membersCount > 0) {
+        "${chat.membersCount} уч. · $preview"
+    } else {
+        preview
+    }
 
     NeonInviteBorder(
         enabled = hasPrivateInvite,
@@ -376,7 +419,12 @@ private fun ChatRow(
                 .padding(horizontal = 10.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            UserAvatar(chat.partner, size = 42.dp, showOnline = true, isOnline = isOnline)
+            UserAvatar(
+                chat.avatarUser(),
+                size = 42.dp,
+                showOnline = !chat.isGroup,
+                isOnline = isOnline,
+            )
             Spacer(Modifier.width(12.dp))
             Column(
                 modifier = Modifier.weight(1f),
@@ -384,7 +432,7 @@ private fun ChatRow(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = chat.partner?.displayName ?: "—",
+                        text = chat.displayTitle,
                         fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.weight(1f),
                         maxLines = 1,
@@ -399,7 +447,7 @@ private fun ChatRow(
                     }
                 }
                 Text(
-                    preview,
+                    subtitle,
                     style = MaterialTheme.typography.bodySmall,
                     color = when {
                         isRinging -> Color(0xFF43A047)

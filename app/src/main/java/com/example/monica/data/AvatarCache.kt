@@ -84,15 +84,21 @@ object AvatarCache {
 
                 val token = session.accessToken
                 val path = objectPath(user)
+                val userId = user?.id.orEmpty()
+                // Групповой аватар лежит в chat-files/… — /api/users/{id}/avatar/ не подходит.
+                val isGroupAvatar =
+                    userId.startsWith("group-") ||
+                        path?.startsWith("chat-files/") == true
 
-                // 1) Endpoint по user id — только если в профиле есть photo path.
+                // 1) Endpoint по user id — только для личных аватаров.
                 if (
+                    !isGroupAvatar &&
                     path != null &&
-                    !user?.id.isNullOrBlank() &&
+                    userId.isNotBlank() &&
                     !token.isNullOrBlank()
                 ) {
                     runCatching {
-                        MonicaApi(session).fetchUserAvatarBytes(user.id)
+                        MonicaApi(session).fetchUserAvatarBytes(userId)
                     }.getOrNull()
                         ?.takeIf { it.isNotEmpty() }
                         ?.let { bytes ->

@@ -4,6 +4,8 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.media.AudioAttributes
+import android.media.MediaPlayer
 import android.os.Build
 import android.os.IBinder
 import android.os.VibrationEffect
@@ -11,13 +13,15 @@ import android.os.Vibrator
 import android.os.VibratorManager
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import com.example.monica.R
 
 /**
- * Держит ongoing foreground-уведомление входящего звонка
- * и непрерывную вибрацию, пока пользователь не примет / отклонит.
+ * Держит ongoing foreground-уведомление входящего звонка,
+ * рингтон и вибрацию, пока пользователь не примет / отклонит.
  */
 class IncomingCallService : Service() {
     private var vibrator: Vibrator? = null
+    private var ringtonePlayer: MediaPlayer? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -60,12 +64,47 @@ class IncomingCallService : Service() {
         }
 
         startRingVibration()
+        startRingSound()
         return START_STICKY
     }
 
     override fun onDestroy() {
+        stopRingSound()
         stopRingVibration()
         super.onDestroy()
+    }
+
+    private fun startRingSound() {
+        if (ringtonePlayer?.isPlaying == true) return
+        stopRingSound()
+        runCatching {
+            val player = MediaPlayer()
+            player.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build(),
+            )
+            resources.openRawResourceFd(R.raw.incoming_call_quiet).use { afd ->
+                player.setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
+            }
+            player.isLooping = true
+            player.prepare()
+            player.start()
+            ringtonePlayer = player
+        }.onFailure {
+            stopRingSound()
+        }
+    }
+
+    private fun stopRingSound() {
+        val player = ringtonePlayer
+        ringtonePlayer = null
+        if (player == null) return
+        runCatching {
+            if (player.isPlaying) player.stop()
+        }
+        runCatching { player.release() }
     }
 
     private fun startRingVibration() {
@@ -98,6 +137,7 @@ class IncomingCallService : Service() {
     }
 
     private fun stopCallForeground() {
+        stopRingSound()
         stopRingVibration()
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         stopSelf()

@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.graphics.Color
 import android.media.AudioAttributes
+import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import coil.ImageLoader
@@ -87,8 +88,10 @@ class MonicaApp : Application(), ImageLoaderFactory {
             .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
             .build()
-        // Новый id канала — иначе Android не обновит vibration pattern у уже созданного.
+        val callSound = Uri.parse("android.resource://$packageName/${R.raw.incoming_call_quiet}")
+        // Новый id канала — иначе Android не обновит sound/vibration у уже созданного.
         runCatching { manager.deleteNotificationChannel("calls_monica_v2") }
+        runCatching { manager.deleteNotificationChannel("calls_monica_v3") }
         manager.createNotificationChannel(
             NotificationChannel(
                 CHANNEL_CALLS,
@@ -99,10 +102,10 @@ class MonicaApp : Application(), ImageLoaderFactory {
                 enableLights(true)
                 lightColor = Color.GREEN
                 enableVibration(true)
-                // Повторный паттерн канала + непрерывная вибрация из IncomingCallService.
+                // Повторный паттерн канала + непрерывный рингтон/вибро из IncomingCallService.
                 vibrationPattern = longArrayOf(0, 1000, 500, 1000, 500)
                 setBypassDnd(true)
-                setSound(Settings.System.DEFAULT_RINGTONE_URI, callAttrs)
+                setSound(callSound, callAttrs)
                 lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
             },
         )
@@ -124,7 +127,7 @@ class MonicaApp : Application(), ImageLoaderFactory {
 
     companion object {
         const val CHANNEL_MESSAGES = "messages_monica"
-        const val CHANNEL_CALLS = "calls_monica_v3"
+        const val CHANNEL_CALLS = "calls_monica_v4"
         const val CHANNEL_DAEMON = "daemon_monica_v2"
     }
 }

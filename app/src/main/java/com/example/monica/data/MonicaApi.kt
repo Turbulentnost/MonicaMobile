@@ -32,12 +32,16 @@ class MonicaApi(private val sessionStore: SessionStore) {
         val nickname: String,
     )
 
-    fun login(email: String, password: String): LoginResult {
-        val body = JSONObject()
-            .put("email", email)
+    fun login(login: String, password: String): LoginResult {
+        // Поле `login` — как на вебе; `email` дублируем для совместимости со старыми сборками API.
+        val identifier = login.trim()
+        val payload = JSONObject()
+            .put("login", identifier)
             .put("password", password)
-            .toString()
-            .toRequestBody(JSON_MEDIA_TYPE)
+        if ("@" in identifier) {
+            payload.put("email", identifier)
+        }
+        val body = payload.toString().toRequestBody(JSON_MEDIA_TYPE)
 
         val json = execute(Request.Builder()
             .url("${sessionStore.apiBaseUrl}/api/auth/login/")
@@ -53,10 +57,10 @@ class MonicaApi(private val sessionStore: SessionStore) {
         )
     }
 
-    /** @return debug_code when backend returns it (DEBUG / no SMTP). */
+    /** @return debug_code when backend returns it (DEBUG / console email). */
     fun registerEmail(email: String): String? {
         val body = JSONObject()
-            .put("email", email)
+            .put("email", email.trim())
             .toString()
             .toRequestBody(JSON_MEDIA_TYPE)
         val json = execute(
@@ -70,8 +74,8 @@ class MonicaApi(private val sessionStore: SessionStore) {
 
     fun verifyRegistrationCode(email: String, code: String): String {
         val body = JSONObject()
-            .put("email", email)
-            .put("code", code)
+            .put("email", email.trim())
+            .put("code", code.trim())
             .toString()
             .toRequestBody(JSON_MEDIA_TYPE)
         return execute(
@@ -234,12 +238,49 @@ class MonicaApi(private val sessionStore: SessionStore) {
         val body = JSONObject().put("recipient_id", recipientId)
             .toString().toRequestBody(JSON_MEDIA_TYPE)
         val json = authPost("/api/chats/start/", body)
-        return ChatSummary(
-            id = json.getString("id"),
-            partner = json.optJSONObject("partner")?.let { Companion.parseUser(it) },
-            lastMessage = null,
-            updatedAt = null,
+        return Companion.parseChat(json)
+    }
+
+    /**
+     * Создаёт группу. photoBytes — опциональный аватар (JPEG/PNG/…).
+     * С фото: multipart title + member_ids[] + photo (как на вебе).
+     * Без фото: JSON { title, member_ids }.
+     */
+    fun createGroup(
+        title: String,
+        memberIds: List<String>,
+        photoBytes: ByteArray? = null,
+        photoFileName: String = "group.jpg",
+        photoMime: String = "image/jpeg",
+    ): ChatSummary {
+        val cleanTitle = title.trim()
+        val ids = memberIds.map { it.trim() }.filter { it.isNotEmpty() }
+        require(cleanTitle.isNotEmpty()) { "Укажите название группы" }
+        require(ids.isNotEmpty()) { "Выберите хотя бы одного участника" }
+
+        if (photoBytes == null || photoBytes.isEmpty()) {
+            val body = JSONObject()
+                .put("title", cleanTitle)
+                .put("member_ids", JSONArray().apply { ids.forEach { put(it) } })
+                .toString()
+                .toRequestBody(JSON_MEDIA_TYPE)
+            return Companion.parseChat(authPost("/api/chats/groups/", body))
+        }
+
+        val safeMime = normalizeGroupPhotoMime(photoMime)
+        val safeName = normalizeGroupPhotoName(photoFileName, safeMime)
+        val builder = MultipartBody.Builder().setType(MultipartBody.FORM)
+        builder.addFormDataPart("title", cleanTitle)
+        ids.forEach { id -> builder.addFormDataPart("member_ids", id) }
+        builder.addFormDataPart(
+            "photo",
+            safeName,
+            photoBytes.toRequestBody(safeMime.toMediaType()),
         )
+        val text = executeRaw(
+            authRequest("/api/chats/groups/").post(builder.build()).build(),
+        )
+        return Companion.parseChat(JSONObject(text))
     }
 
     fun forwardMessages(
@@ -567,6 +608,30 @@ class MonicaApi(private val sessionStore: SessionStore) {
         authDelete("/api/notifications/clear/")
     }
 
+    fun getAiStyle(): AiStyleProfile {
+        val json = authGet("/api/ai/style/")
+        return AiStyleProfile(
+            enabled = json.optBoolean("enabled", true),
+            samplesCount = json.optInt("samples_count", 0),
+        )
+    }
+
+    fun aiComplete(draft: String, chatId: String?): AiCompleteResult {
+        val payload = JSONObject().put("draft", draft)
+        if (!chatId.isNullOrBlank()) {
+            payload.put("chat_id", chatId)
+        }
+        val body = payload.toString().toRequestBody(JSON_MEDIA_TYPE)
+        val json = authPost("/api/ai/complete/", body)
+        return AiCompleteResult(
+            suggestion = json.optString("suggestion", ""),
+            disabled = json.optBoolean("disabled", false),
+            rateLimited = json.optBoolean("rate_limited", false),
+            error = json.optBoolean("error", false),
+            detail = json.optString("detail", "").takeIf { it.isNotBlank() },
+        )
+    }
+
     fun registerDevice(fcmToken: String, platform: String = "android") {
         val body = JSONObject()
             .put("token", fcmToken)
@@ -626,13 +691,34 @@ class MonicaApi(private val sessionStore: SessionStore) {
 
     private fun execute(request: Request): JSONObject {
         val text = executeRaw(request)
-        return JSONObject(text)
+        return parseJsonObject(text, request.url.toString())
+    }
+
+    private fun parseJsonObject(text: String, url: String): JSONObject {
+        val trimmed = text.trimStart()
+        if (
+            trimmed.startsWith("<!DOCTYPE", ignoreCase = true) ||
+            trimmed.startsWith("<html", ignoreCase = true)
+        ) {
+            throw IllegalStateException(
+                "Сервер вернул HTML вместо API (часто DisallowedHost или неверный URL). $url",
+            )
+        }
+        return try {
+            JSONObject(text)
+        } catch (e: Exception) {
+            throw IllegalStateException("Некорректный ответ API: $url", e)
+        }
     }
 
     private fun executeRaw(request: Request): String {
         client.newCall(request).execute().use { response ->
             val text = response.body?.string().orEmpty()
-            if (response.code == 401 && sessionStore.refreshToken != null) {
+            if (
+                response.code == 401 &&
+                sessionStore.refreshToken != null &&
+                !isCredentialEndpoint(request.url.encodedPath)
+            ) {
                 if (refreshAccessToken()) {
                     val retry = request.newBuilder()
                         .header("Authorization", "Bearer ${sessionStore.accessToken}")
@@ -646,7 +732,7 @@ class MonicaApi(private val sessionStore: SessionStore) {
                     }
                 }
             }
-            if (!response.isSuccessful) throw apiError(response.code, text)
+            if (!response.isSuccessful) throw apiError(response.code, text, request.url.toString())
             return text
         }
     }
@@ -654,7 +740,11 @@ class MonicaApi(private val sessionStore: SessionStore) {
     private fun executeBytes(request: Request): ByteArray {
         client.newCall(request).execute().use { response ->
             val bytes = response.body?.bytes() ?: ByteArray(0)
-            if (response.code == 401 && sessionStore.refreshToken != null) {
+            if (
+                response.code == 401 &&
+                sessionStore.refreshToken != null &&
+                !isCredentialEndpoint(request.url.encodedPath)
+            ) {
                 if (refreshAccessToken()) {
                     val retry = request.newBuilder()
                         .header("Authorization", "Bearer ${sessionStore.accessToken}")
@@ -665,6 +755,7 @@ class MonicaApi(private val sessionStore: SessionStore) {
                             throw apiError(
                                 retryResp.code,
                                 retryBytes.toString(Charsets.UTF_8),
+                                retry.url.toString(),
                             )
                         }
                         return retryBytes
@@ -672,25 +763,51 @@ class MonicaApi(private val sessionStore: SessionStore) {
                 }
             }
             if (!response.isSuccessful) {
-                throw apiError(response.code, bytes.toString(Charsets.UTF_8))
+                throw apiError(
+                    response.code,
+                    bytes.toString(Charsets.UTF_8),
+                    request.url.toString(),
+                )
             }
             return bytes
         }
     }
 
-    private fun apiError(code: Int, text: String): IllegalStateException {
+    /** Login/register/refresh — не ретраим через refresh: иначе POST login уходит повторно и ломается. */
+    private fun isCredentialEndpoint(path: String): Boolean {
+        val p = path.trimEnd('/')
+        return p.endsWith("/api/auth/login") ||
+            p.endsWith("/api/auth/token/refresh") ||
+            p.contains("/api/auth/register/")
+    }
+
+    private fun apiError(code: Int, text: String, url: String = ""): IllegalStateException {
+        val trimmed = text.trimStart()
+        if (
+            trimmed.startsWith("<!DOCTYPE", ignoreCase = true) ||
+            trimmed.startsWith("<html", ignoreCase = true)
+        ) {
+            val hostHint = if (url.isNotBlank()) " URL: $url" else ""
+            return IllegalStateException(
+                "Сервер отклонил Host (или это не API). Укажите https://metamonica.ru в monica.api.base.url.$hostHint",
+            )
+        }
         val message = runCatching {
             val json = JSONObject(text)
-            json.optString("detail").takeIf { it.isNotBlank() }
-                ?: json.keys().asSequence().firstNotNullOfOrNull { key ->
-                    val value = json.opt(key)
-                    val textValue = when (value) {
-                        is JSONArray -> value.optString(0)
-                        null -> ""
-                        else -> value.toString()
-                    }
-                    textValue.takeIf { it.isNotBlank() }?.let { "$key: $it" }
+            when (val detail = json.opt("detail")) {
+                is String -> detail.takeIf { it.isNotBlank() }
+                is JSONArray -> detail.optString(0).takeIf { it.isNotBlank() }
+                else -> null
+            } ?: json.keys().asSequence().firstNotNullOfOrNull { key ->
+                val value = json.opt(key)
+                val textValue = when (value) {
+                    is JSONArray -> value.optString(0)
+                    is JSONObject -> value.optString("msg").ifBlank { value.toString() }
+                    null -> ""
+                    else -> value.toString()
                 }
+                textValue.takeIf { it.isNotBlank() && textValue != "null" }?.let { "$key: $it" }
+            }
         }.getOrNull()
         return IllegalStateException(message ?: "Ошибка API ($code)")
     }
@@ -847,12 +964,31 @@ class MonicaApi(private val sessionStore: SessionStore) {
             )
         }
 
-        fun parseChat(json: JSONObject): ChatSummary = ChatSummary(
-            id = json.getString("id"),
-            partner = json.optJSONObject("partner")?.let { parseUser(it) },
-            lastMessage = json.optJSONObject("last_message")?.let { parseMessage(it) },
-            updatedAt = json.optString("updated_at").takeIf { it.isNotBlank() },
-        )
+        fun parseChat(json: JSONObject): ChatSummary {
+            val membersJson = json.optJSONArray("members")
+            val members = if (membersJson == null) {
+                emptyList()
+            } else {
+                (0 until membersJson.length()).mapNotNull { idx ->
+                    membersJson.optJSONObject(idx)?.let { parseUser(it) }
+                }
+            }
+            val chatType = json.optString("chat_type", "direct").ifBlank { "direct" }
+            val isGroup = json.optBoolean("is_group", chatType == "group")
+            return ChatSummary(
+                id = json.getString("id"),
+                partner = json.optJSONObject("partner")?.let { parseUser(it) },
+                lastMessage = json.optJSONObject("last_message")?.let { parseMessage(it) },
+                updatedAt = json.optString("updated_at").takeIf { it.isNotBlank() },
+                chatType = chatType,
+                isGroup = isGroup,
+                title = json.optString("title").takeIf { it.isNotBlank() && it != "null" },
+                photo = json.optString("photo").takeIf { it.isNotBlank() && it != "null" },
+                photoUrl = json.optString("photo_url").takeIf { it.isNotBlank() && it != "null" },
+                membersCount = json.optInt("members_count", members.size),
+                members = members,
+            )
+        }
 
         fun parseNotification(json: JSONObject): AppNotification {
             val payloadJson = json.optJSONObject("payload")
@@ -906,4 +1042,30 @@ class MonicaApi(private val sessionStore: SessionStore) {
             return action to call
         }
     }
+}
+
+private fun normalizeGroupPhotoMime(mime: String?): String {
+    val value = mime?.trim()?.lowercase().orEmpty()
+    return when {
+        value == "image/jpg" || value == "image/jpeg" -> "image/jpeg"
+        value == "image/png" -> "image/png"
+        value == "image/webp" -> "image/webp"
+        value == "image/gif" -> "image/gif"
+        else -> "image/jpeg"
+    }
+}
+
+private fun normalizeGroupPhotoName(fileName: String?, mime: String): String {
+    val base = fileName?.trim()?.substringAfterLast('/')?.takeIf { it.isNotBlank() } ?: "group"
+    val lower = base.lowercase()
+    val hasExt = lower.endsWith(".jpg") || lower.endsWith(".jpeg") ||
+        lower.endsWith(".png") || lower.endsWith(".webp") || lower.endsWith(".gif")
+    if (hasExt) return base
+    val ext = when (mime) {
+        "image/png" -> ".png"
+        "image/webp" -> ".webp"
+        "image/gif" -> ".gif"
+        else -> ".jpg"
+    }
+    return base.substringBeforeLast('.', base) + ext
 }

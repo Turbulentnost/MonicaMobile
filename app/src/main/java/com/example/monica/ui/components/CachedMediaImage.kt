@@ -34,13 +34,37 @@ fun CachedMediaImage(
     message: MessageItem,
     api: MonicaApi,
     modifier: Modifier = Modifier,
+    contentScale: ContentScale = ContentScale.Crop,
+) {
+    CachedMediaImage(
+        objectPath = message.content,
+        contentUrl = message.contentUrl,
+        fileName = message.fileName,
+        api = api,
+        modifier = modifier,
+        contentScale = contentScale,
+        localPreviewPath = message.localPreviewPath,
+        uploadProgress = message.uploadProgress,
+    )
+}
+
+@Composable
+fun CachedMediaImage(
+    objectPath: String?,
+    contentUrl: String?,
+    fileName: String?,
+    api: MonicaApi,
+    modifier: Modifier = Modifier,
+    contentScale: ContentScale = ContentScale.Crop,
+    localPreviewPath: String? = null,
+    uploadProgress: Float? = null,
 ) {
     val context = LocalContext.current
-    val cacheKey = MediaImageCache.key(message.content, message.contentUrl)
-    val localPreview = remember(message.localPreviewPath) {
-        message.localPreviewPath?.let { path -> File(path).takeIf { it.exists() && it.length() > 0L } }
+    val cacheKey = MediaImageCache.key(objectPath, contentUrl)
+    val localPreview = remember(localPreviewPath) {
+        localPreviewPath?.let { path -> File(path).takeIf { it.exists() && it.length() > 0L } }
     }
-    var file by remember(cacheKey, message.localPreviewPath) {
+    var file by remember(cacheKey, localPreviewPath) {
         mutableStateOf(
             localPreview
                 ?: MediaImageCache.getCached(context, cacheKey),
@@ -49,7 +73,7 @@ fun CachedMediaImage(
     var loading by remember(cacheKey) { mutableStateOf(file == null) }
     var failed by remember(cacheKey) { mutableStateOf(false) }
 
-    LaunchedEffect(cacheKey, message.contentUrl, message.localPreviewPath) {
+    LaunchedEffect(cacheKey, contentUrl, localPreviewPath) {
         localPreview?.let {
             file = it
             loading = false
@@ -78,8 +102,8 @@ fun CachedMediaImage(
             MediaImageCache.getOrFetch(
                 context = context,
                 api = api,
-                objectPath = message.content,
-                contentUrl = message.contentUrl,
+                objectPath = objectPath,
+                contentUrl = contentUrl,
             )
         }
         loading = false
@@ -92,13 +116,13 @@ fun CachedMediaImage(
                 AsyncImage(
                     model = ImageRequest.Builder(context)
                         .data(file)
-                        .memoryCacheKey(cacheKey ?: message.localPreviewPath)
-                        .diskCacheKey(cacheKey ?: message.localPreviewPath)
+                        .memoryCacheKey(cacheKey ?: localPreviewPath)
+                        .diskCacheKey(cacheKey ?: localPreviewPath)
                         .crossfade(true)
                         .build(),
-                    contentDescription = message.fileName ?: "Фото",
+                    contentDescription = fileName ?: "Фото",
                     modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop,
+                    contentScale = contentScale,
                 )
             }
             loading -> CircularProgressIndicator(strokeWidth = 2.dp)
@@ -109,9 +133,9 @@ fun CachedMediaImage(
             )
         }
 
-        if (message.isUploading) {
+        if (uploadProgress != null) {
             UploadProgressOverlay(
-                progress = message.uploadProgress,
+                progress = uploadProgress,
                 color = Color.White,
                 trackColor = Color.White.copy(alpha = 0.25f),
             )

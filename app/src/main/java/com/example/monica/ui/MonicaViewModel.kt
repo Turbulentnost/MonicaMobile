@@ -6,6 +6,9 @@ import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.monica.data.AppNotification
+import com.example.monica.data.AppUpdateChecker
+import com.example.monica.data.AppUpdateInfo
+import com.example.monica.data.AppUpdateInstaller
 import com.example.monica.data.AvatarCache
 import com.example.monica.data.CallUiState
 import com.example.monica.data.CallUiStatus
@@ -25,6 +28,7 @@ import com.example.monica.data.ws.PresenceHub
 import com.example.monica.data.ws.PrivateSocket
 import com.example.monica.push.MonicaDaemonService
 import com.example.monica.push.PushRegistrar
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -149,6 +153,27 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
     private val _inviteBanner = MutableStateFlow<AppNotification?>(null)
     val inviteBanner: StateFlow<AppNotification?> = _inviteBanner.asStateFlow()
 
+    private val _aiStyleEnabled = MutableStateFlow(true)
+    val aiStyleEnabled: StateFlow<Boolean> = _aiStyleEnabled.asStateFlow()
+
+    private val _aiReasonActive = MutableStateFlow(false)
+    val aiReasonActive: StateFlow<Boolean> = _aiReasonActive.asStateFlow()
+
+    private val _aiSuggestion = MutableStateFlow("")
+    val aiSuggestion: StateFlow<String> = _aiSuggestion.asStateFlow()
+
+    private val _aiLoading = MutableStateFlow(false)
+    val aiLoading: StateFlow<Boolean> = _aiLoading.asStateFlow()
+
+    private val updateChecker = AppUpdateChecker(session)
+    private val updateInstaller = AppUpdateInstaller(app)
+
+    private val _appUpdate = MutableStateFlow<AppUpdateInfo?>(null)
+    val appUpdate: StateFlow<AppUpdateInfo?> = _appUpdate.asStateFlow()
+
+    private val _updateDownloadProgress = MutableStateFlow<Float?>(null)
+    val updateDownloadProgress: StateFlow<Float?> = _updateDownloadProgress.asStateFlow()
+
     /** chatId → уведомление входящего invite */
     val incomingInvitesByChat: StateFlow<Map<String, AppNotification>> = _notifications
         .map { list ->
@@ -165,6 +190,12 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
     private var typingJob: Job? = null
     private var privateSyncJob: Job? = null
     private var openChatJob: Job? = null
+    private var aiCompleteJob: Job? = null
+    private var lastFetchedAiDraft: String = ""
+    private var lastFetchedAiChatId: String? = null
+    private var updateCheckJob: Job? = null
+    private var updateDownloadJob: Job? = null
+    private var pendingUpdateInstallPermission = false
 
     init {
         if (session.isLoggedIn) {
@@ -301,13 +332,15 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
         session.darkTheme = next
     }
 
-    fun login(email: String, password: String, onSuccess: () -> Unit) {
+    fun login(login: String, password: String, onSuccess: () -> Unit) {
         viewModelScope.launch {
             _loading.value = true
             _error.value = null
             try {
+                // Старые refresh-токены не должны участвовать в логине (иначе 401→retry давал 400).
+                session.clearAuth()
                 val result = withContext(Dispatchers.IO) {
-                    api.login(email, password)
+                    api.login(login, password)
                 }
                 session.saveLogin(result.access, result.refresh, result.userId, result.nickname)
                 _loggedIn.value = true
@@ -618,7 +651,7 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
                 _chats.value = list
                 withContext(Dispatchers.IO) {
                     list.forEach { chat ->
-                        AvatarCache.warm(getApplication(), session, chat.partner)
+                        AvatarCache.warm(getApplication(), session, chat.avatarUser())
                     }
                 }
             } catch (e: Exception) {
@@ -687,6 +720,40 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun createGroup(
+        title: String,
+        memberIds: List<String>,
+        photoBytes: ByteArray? = null,
+        photoFileName: String = "group.jpg",
+        photoMime: String = "image/jpeg",
+        onCreated: (String) -> Unit = {},
+    ) {
+        viewModelScope.launch {
+            _loading.value = true
+            try {
+                val chat = withContext(Dispatchers.IO) {
+                    api.createGroup(
+                        title = title,
+                        memberIds = memberIds,
+                        photoBytes = photoBytes,
+                        photoFileName = photoFileName,
+                        photoMime = photoMime,
+                    )
+                }
+                _chats.value = listOf(chat) + _chats.value.filter { it.id != chat.id }
+                withContext(Dispatchers.IO) {
+                    AvatarCache.warm(getApplication(), session, chat.avatarUser())
+                }
+                refreshChats()
+                onCreated(chat.id)
+            } catch (e: Exception) {
+                _error.value = e.message
+            } finally {
+                _loading.value = false
+            }
+        }
+    }
+
     fun openChat(chatId: String) {
         if (chatId.isBlank()) return
         // Повторный вход в тот же чат (например после экрана деталей) — не сбрасываем историю.
@@ -703,6 +770,7 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
         }
         openChatJob?.cancel()
         currentChatId = chatId
+        resetAiReason()
         com.example.monica.data.AppVisibility.setOpenChatId(chatId)
         _partnerTyping.value = false
         _messages.value = emptyList()
@@ -909,6 +977,7 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
         openChatJob = null
         chatSocket.disconnect()
         currentChatId = null
+        resetAiReason()
         com.example.monica.data.AppVisibility.setOpenChatId(null)
         clearMessageSelection()
         _replyTo.value = null
@@ -1207,6 +1276,111 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun loadAiStyle() {
+        viewModelScope.launch {
+            try {
+                val profile = withContext(Dispatchers.IO) { api.getAiStyle() }
+                _aiStyleEnabled.value = profile.enabled
+                if (!profile.enabled) {
+                    resetAiReason()
+                }
+            } catch (_: Exception) {
+                _aiStyleEnabled.value = true
+            }
+        }
+    }
+
+    fun toggleAiReason(draft: String = "", chatId: String? = null) {
+        if (!_aiStyleEnabled.value) return
+        if (_aiReasonActive.value) {
+            resetAiReason()
+            return
+        }
+        lastFetchedAiDraft = ""
+        lastFetchedAiChatId = null
+        _aiReasonActive.value = true
+        if (draft.isNotBlank()) {
+            scheduleAiComplete(draft, chatId)
+        }
+    }
+
+    fun onAiDraftChange(draft: String, chatId: String?) {
+        scheduleAiComplete(draft, chatId)
+    }
+
+    fun acceptAiSuggestion(draft: String): String? {
+        val suggestion = _aiSuggestion.value.takeIf { it.isNotBlank() } ?: return null
+        val next = draft + suggestion
+        _aiSuggestion.value = ""
+        lastFetchedAiDraft = next
+        lastFetchedAiChatId = currentChatId
+        return next
+    }
+
+    fun clearAiSuggestion() {
+        aiCompleteJob?.cancel()
+        aiCompleteJob = null
+        _aiSuggestion.value = ""
+        _aiLoading.value = false
+        lastFetchedAiDraft = ""
+        lastFetchedAiChatId = null
+    }
+
+    private fun resetAiReason() {
+        clearAiSuggestion()
+        _aiReasonActive.value = false
+    }
+
+    private fun scheduleAiComplete(draft: String, chatId: String?) {
+        if (!_aiStyleEnabled.value || !_aiReasonActive.value || draft.isBlank()) {
+            aiCompleteJob?.cancel()
+            aiCompleteJob = null
+            _aiSuggestion.value = ""
+            _aiLoading.value = false
+            return
+        }
+        if (draft == lastFetchedAiDraft && chatId == lastFetchedAiChatId) {
+            return
+        }
+
+        aiCompleteJob?.cancel()
+        _aiSuggestion.value = ""
+        _aiLoading.value = false
+        aiCompleteJob = viewModelScope.launch {
+            delay(AI_COMPLETE_DEBOUNCE_MS)
+            if (!_aiStyleEnabled.value || !_aiReasonActive.value || draft.isBlank()) {
+                return@launch
+            }
+            _aiLoading.value = true
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    api.aiComplete(draft, chatId)
+                }
+                if (!_aiReasonActive.value || !_aiStyleEnabled.value) return@launch
+                lastFetchedAiDraft = draft
+                lastFetchedAiChatId = chatId
+                when {
+                    result.disabled -> {
+                        _aiStyleEnabled.value = false
+                        resetAiReason()
+                    }
+                    result.rateLimited || result.error -> {
+                        _aiSuggestion.value = ""
+                    }
+                    else -> {
+                        _aiSuggestion.value = result.suggestion
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                _aiSuggestion.value = ""
+            } finally {
+                _aiLoading.value = false
+            }
+        }
+    }
+
     private fun stopTyping() {
         typingJob?.cancel()
         chatSocket.sendTyping(false)
@@ -1423,6 +1597,66 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun onMainActivityResumed() {
+        if (pendingUpdateInstallPermission && updateInstaller.canRequestPackageInstalls()) {
+            pendingUpdateInstallPermission = false
+            startUpdateDownload()
+            return
+        }
+        checkAppUpdate()
+    }
+
+    fun checkAppUpdate(force: Boolean = false) {
+        if (updateCheckJob?.isActive == true) return
+        updateCheckJob = viewModelScope.launch {
+            try {
+                val update = withContext(Dispatchers.IO) {
+                    updateChecker.check(force)
+                }
+                if (update != null) {
+                    _appUpdate.value = update
+                }
+            } catch (_: Exception) {
+                // Update checks are best-effort and should not interrupt chat startup.
+            }
+        }
+    }
+
+    fun dismissUpdate() {
+        val update = _appUpdate.value ?: return
+        session.dismissedUpdateVersionCode = update.versionCode
+        pendingUpdateInstallPermission = false
+        _updateDownloadProgress.value = null
+        _appUpdate.value = null
+    }
+
+    fun startUpdateDownload() {
+        val update = _appUpdate.value ?: return
+        if (updateDownloadJob?.isActive == true) return
+        if (!updateInstaller.canRequestPackageInstalls()) {
+            pendingUpdateInstallPermission = true
+            updateInstaller.openInstallPermissionSettings()
+            _error.value = "Разрешите установку Monica из этого источника и вернитесь в приложение"
+            return
+        }
+        pendingUpdateInstallPermission = false
+        updateDownloadJob = viewModelScope.launch {
+            _updateDownloadProgress.value = 0f
+            try {
+                val apk = withContext(Dispatchers.IO) {
+                    updateInstaller.downloadApk(update) { progress ->
+                        _updateDownloadProgress.value = progress
+                    }
+                }
+                updateInstaller.startInstall(apk)
+            } catch (e: Exception) {
+                _error.value = e.message ?: "Не удалось скачать обновление"
+            } finally {
+                _updateDownloadProgress.value = null
+            }
+        }
+    }
+
     private fun resolveInvite(id: String, resolved: String) {
         _notifications.update { list ->
             list.map {
@@ -1452,6 +1686,7 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     companion object {
+        private const val AI_COMPLETE_DEBOUNCE_MS = 450L
         private const val MAX_AVATAR_BYTES = 10 * 1024 * 1024
         private val ALLOWED_AVATAR_MIME = setOf(
             "image/jpeg",

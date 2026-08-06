@@ -16,6 +16,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -24,7 +28,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.monica.data.ForwardBundleItem
-import com.example.monica.data.MessageItem
+import com.example.monica.data.MessageAttachment
 import com.example.monica.data.MonicaApi
 import com.example.monica.ui.util.TimeFormat
 
@@ -35,6 +39,7 @@ fun ForwardedBundleView(
     api: MonicaApi,
     foreground: Color,
     onOpenOriginal: (chatId: String, messageId: String) -> Unit,
+    onDownloadFile: ((path: String?, url: String?, name: String, mime: String?) -> Unit)? = null,
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
         Text(
@@ -42,12 +47,13 @@ fun ForwardedBundleView(
             color = foreground,
             fontWeight = FontWeight.SemiBold,
         )
-        Spacer(Modifier.height(6.dp))
+        Spacer(modifier = Modifier.height(6.dp))
         bundle.forEach { item ->
             ForwardedItem(
                 item = item,
                 api = api,
                 foreground = foreground,
+                onDownloadFile = onDownloadFile,
                 onOpen = {
                     if (item.originalChatId.isNotBlank() && item.originalId.isNotBlank()) {
                         onOpenOriginal(item.originalChatId, item.originalId)
@@ -56,7 +62,7 @@ fun ForwardedBundleView(
             )
         }
         if (comment.isNotBlank()) {
-            Spacer(Modifier.height(6.dp))
+            Spacer(modifier = Modifier.height(6.dp))
             LinkAwareText(
                 text = comment,
                 color = foreground,
@@ -72,7 +78,35 @@ private fun ForwardedItem(
     api: MonicaApi,
     foreground: Color,
     onOpen: () -> Unit,
+    onDownloadFile: ((path: String?, url: String?, name: String, mime: String?) -> Unit)?,
 ) {
+    val allPhotos = remember(item) {
+        item.attachments.ifEmpty {
+            listOf(
+                MessageAttachment(
+                    path = item.content,
+                    contentUrl = item.contentUrl,
+                    fileName = item.fileName,
+                    mimeType = item.mimeType,
+                ),
+            )
+        }.mapNotNull { it.toPhotoViewerItem() }
+    }
+    var lightboxIndex by remember(item.originalId) { mutableStateOf<Int?>(null) }
+    lightboxIndex?.let { index ->
+        if (allPhotos.isNotEmpty()) {
+            PhotoLightbox(
+                items = allPhotos,
+                initialIndex = index,
+                api = api,
+                onDismiss = { lightboxIndex = null },
+                onDownload = { path, url, name, mime ->
+                    onDownloadFile?.invoke(path, url, name, mime)
+                },
+            )
+        }
+    }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -104,36 +138,23 @@ private fun ForwardedItem(
                     modifier = Modifier.size(16.dp),
                 )
             }
-            if (item.messageType == "photo") {
-                val photos = item.attachments.ifEmpty {
-                    listOf(
-                        com.example.monica.data.MessageAttachment(
-                            path = item.content,
-                            contentUrl = item.contentUrl,
-                            fileName = item.fileName,
-                        ),
-                    )
-                }.take(4)
+            if (item.messageType == "photo" && allPhotos.isNotEmpty()) {
+                val preview = allPhotos.take(4)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    photos.forEachIndexed { index, photo ->
+                    preview.forEachIndexed { index, photo ->
                         CachedMediaImage(
-                            message = MessageItem(
-                                id = "${item.originalId}-$index",
-                                sender = item.sender,
-                                messageType = "photo",
-                                content = photo.path.orEmpty(),
-                                contentUrl = photo.contentUrl,
-                                fileName = photo.fileName,
-                                sentAt = item.sentAt,
-                            ),
+                            objectPath = photo.path,
+                            contentUrl = photo.contentUrl,
+                            fileName = photo.fileName,
                             api = api,
                             modifier = Modifier
                                 .weight(1f)
                                 .height(112.dp)
-                                .clip(RoundedCornerShape(8.dp)),
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { lightboxIndex = index },
                         )
                     }
                 }

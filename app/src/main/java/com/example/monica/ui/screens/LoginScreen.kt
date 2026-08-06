@@ -72,16 +72,16 @@ fun LoginScreen(
     onLoggedIn: () -> Unit,
     onRegister: () -> Unit,
 ) {
-    var email by remember { mutableStateOf("") }
+    var loginId by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var passwordVisible by remember { mutableStateOf(false) }
     val loading by vm.loading.collectAsStateWithLifecycle()
     val error by vm.error.collectAsStateWithLifecycle()
 
     fun submit() {
-        if (loading || email.isBlank() || password.isBlank()) return
+        if (loading || loginId.isBlank() || password.isBlank()) return
         vm.clearError()
-        vm.login(email.trim(), password, onLoggedIn)
+        vm.login(loginId.trim(), password, onLoggedIn)
     }
 
     Box(
@@ -116,16 +116,16 @@ fun LoginScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 OutlinedTextField(
-                    value = email,
-                    onValueChange = { email = it },
+                    value = loginId,
+                    onValueChange = { loginId = it },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     shape = FieldShape,
                     placeholder = {
-                        Text("Логин / Email", color = LoginMuted)
+                        Text("Email или никнейм", color = LoginMuted)
                     },
                     keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Email,
+                        keyboardType = KeyboardType.Text,
                         imeAction = ImeAction.Next,
                     ),
                     colors = loginFieldColors(),
@@ -186,7 +186,7 @@ fun LoginScreen(
 
                 Button(
                     onClick = { submit() },
-                    enabled = !loading && email.isNotBlank() && password.isNotBlank(),
+                    enabled = !loading && loginId.isNotBlank() && password.isNotBlank(),
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(54.dp),

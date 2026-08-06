@@ -11,21 +11,45 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavType
@@ -33,6 +57,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.example.monica.data.AppUpdateInfo
 import com.example.monica.data.SessionStore
 import com.example.monica.data.ws.PresenceHub
 import com.example.monica.push.MonicaDaemonService
@@ -42,6 +67,7 @@ import com.example.monica.ui.components.LinkCopiedBanner
 import com.example.monica.ui.screens.ChatDetailsScreen
 import com.example.monica.ui.screens.ChatListScreen
 import com.example.monica.ui.screens.ChatScreen
+import com.example.monica.ui.screens.CreateGroupScreen
 import com.example.monica.ui.screens.LoginScreen
 import com.example.monica.ui.screens.NotificationsScreen
 import com.example.monica.ui.screens.PrivateChatScreen
@@ -85,6 +111,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        vm.onMainActivityResumed()
         // UI открыт — online + демон без постоянного уведомления.
         if (SessionStore(this).isLoggedIn) {
             PresenceHub.onAppForeground(this)
@@ -159,6 +186,8 @@ private fun MonicaNav(
     val loggedIn by vm.loggedIn.collectAsStateWithLifecycle()
     val privateNav by vm.privateNav.collectAsStateWithLifecycle()
     val pendingChatNav by vm.pendingChatNav.collectAsStateWithLifecycle()
+    val appUpdate by vm.appUpdate.collectAsStateWithLifecycle()
+    val updateDownloadProgress by vm.updateDownloadProgress.collectAsStateWithLifecycle()
     val navController = rememberNavController()
 
     NotificationPermissionEffect()
@@ -247,11 +276,25 @@ private fun MonicaNav(
                     onOpenNotifications = {
                         navController.navigate("notifications")
                     },
+                    onCreateGroup = {
+                        navController.navigate("create-group")
+                    },
                     onOpenProfile = {
                         navController.navigate("profile")
                     },
                     onOpenSettings = {
                         navController.navigate("settings")
+                    },
+                )
+            }
+            composable("create-group") {
+                CreateGroupScreen(
+                    vm = vm,
+                    onBack = { navController.popBackStack() },
+                    onCreated = { chatId ->
+                        navController.navigate("chat/$chatId") {
+                            popUpTo("chats")
+                        }
                     },
                 )
             }
@@ -408,6 +451,84 @@ private fun MonicaNav(
         }
 
         LinkCopiedBanner()
+        UpdateAvailableBanner(
+            update = appUpdate,
+            progress = updateDownloadProgress,
+            onUpdate = vm::startUpdateDownload,
+            onDismiss = vm::dismissUpdate,
+        )
+    }
+}
+
+@Composable
+private fun BoxScope.UpdateAvailableBanner(
+    update: AppUpdateInfo?,
+    progress: Float?,
+    onUpdate: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AnimatedVisibility(
+        visible = update != null,
+        modifier = Modifier
+            .align(Alignment.TopCenter)
+            .statusBarsPadding()
+            .padding(horizontal = 12.dp, top = 10.dp)
+            .zIndex(18f),
+        enter = fadeIn() + slideInVertically { -it },
+        exit = fadeOut() + slideOutVertically { -it },
+    ) {
+        if (update != null) {
+            Surface(
+                color = MaterialTheme.colorScheme.surface,
+                contentColor = MaterialTheme.colorScheme.onSurface,
+                shape = RoundedCornerShape(22.dp),
+                tonalElevation = 6.dp,
+                shadowElevation = 8.dp,
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                ) {
+                    Text(
+                        text = "Доступна версия ${update.versionName}",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        text = "Можно обновить Monica прямо сейчас.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    if (progress != null) {
+                        Text(
+                            text = "Скачивание… ${(progress * 100).toInt().coerceIn(0, 100)}%",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        LinearProgressIndicator(
+                            progress = { progress.coerceIn(0f, 1f) },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            TextButton(onClick = onDismiss) {
+                                Text("Позже")
+                            }
+                            Button(onClick = onUpdate) {
+                                Text("Обновить")
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

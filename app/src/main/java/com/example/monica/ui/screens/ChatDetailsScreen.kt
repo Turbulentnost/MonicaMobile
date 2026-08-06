@@ -50,8 +50,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.monica.data.MessageAttachment
 import com.example.monica.data.MessageItem
@@ -59,6 +57,8 @@ import com.example.monica.data.UserProfile
 import com.example.monica.ui.MonicaViewModel
 import com.example.monica.ui.components.CachedMediaImage
 import com.example.monica.ui.components.MonicaAppBar
+import com.example.monica.ui.components.PhotoLightbox
+import com.example.monica.ui.components.PhotoViewerItem
 import com.example.monica.ui.components.UserAvatar
 import com.example.monica.ui.components.rememberChatFileDownloader
 import com.example.monica.ui.util.TimeFormat
@@ -94,7 +94,9 @@ fun ChatDetailsScreen(
 ) {
     val chats by vm.chats.collectAsStateWithLifecycle()
     val onlineIds by vm.onlineIds.collectAsStateWithLifecycle()
-    val partner = chats.find { it.id == chatId }?.partner
+    val chat = chats.find { it.id == chatId }
+    val partner = chat?.partner
+    val isGroup = chat?.isGroup == true
     val isOnline = onlineIds.contains(partner?.id)
 
     var tabIndex by remember { mutableIntStateOf(0) }
@@ -106,7 +108,7 @@ fun ChatDetailsScreen(
     var searchResults by remember { mutableStateOf<List<MessageItem>>(emptyList()) }
     var searchLoading by remember { mutableStateOf(false) }
     var searchError by remember { mutableStateOf<String?>(null) }
-    var lightboxPhoto by remember { mutableStateOf<SharedPhotoRow?>(null) }
+    var lightboxIndex by remember { mutableStateOf<Int?>(null) }
     val downloadChatFile = rememberChatFileDownloader(vm.api)
 
     LaunchedEffect(chatId) {
@@ -179,7 +181,15 @@ fun ChatDetailsScreen(
             contentPadding = PaddingValues(bottom = 24.dp),
         ) {
             item {
-                PartnerHeader(partner = partner, isOnline = isOnline)
+                PartnerHeader(
+                    partner = if (isGroup) chat?.avatarUser() else partner,
+                    isOnline = isOnline,
+                    showOnline = !isGroup,
+                    subtitle = if (isGroup) {
+                        val count = chat?.membersCount ?: 0
+                        if (count > 0) "$count участников" else "Группа"
+                    } else null,
+                )
             }
             item {
                 Column(modifier = Modifier.padding(horizontal = 16.dp)) {
@@ -303,7 +313,11 @@ fun ChatDetailsScreen(
                             loading = filesLoading,
                             error = filesError,
                             vm = vm,
-                            onOpen = { lightboxPhoto = it },
+                            onOpen = { photo ->
+                                lightboxIndex = photos.indexOfFirst {
+                                    it.path == photo.path && it.contentUrl == photo.contentUrl
+                                }.takeIf { it >= 0 } ?: 0
+                            },
                         )
                     }
                 }
@@ -318,66 +332,68 @@ fun ChatDetailsScreen(
         }
     }
 
-    lightboxPhoto?.let { photo ->
-        Dialog(
-            onDismissRequest = { lightboxPhoto = null },
-            properties = DialogProperties(usePlatformDefaultWidth = false),
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.92f))
-                    .clickable { lightboxPhoto = null },
-                contentAlignment = Alignment.Center,
-            ) {
-                CachedMediaImage(
-                    message = MessageItem(
-                        id = photo.messageId,
-                        sender = null,
-                        messageType = "photo",
-                        content = photo.path.orEmpty(),
-                        contentUrl = photo.contentUrl,
-                        fileName = photo.fileName,
-                        sentAt = "",
-                    ),
-                    api = vm.api,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .height(420.dp),
-                )
-            }
+    lightboxIndex?.let { index ->
+        val viewerItems = photos.map { photo ->
+            PhotoViewerItem(
+                path = photo.path,
+                contentUrl = photo.contentUrl,
+                fileName = photo.fileName,
+                mimeType = "image/jpeg",
+            )
+        }
+        if (viewerItems.isNotEmpty()) {
+            PhotoLightbox(
+                items = viewerItems,
+                initialIndex = index,
+                api = vm.api,
+                onDismiss = { lightboxIndex = null },
+                onDownload = downloadChatFile,
+            )
         }
     }
 }
 
 @Composable
-private fun PartnerHeader(partner: UserProfile?, isOnline: Boolean) {
+private fun PartnerHeader(
+    partner: UserProfile?,
+    isOnline: Boolean,
+    showOnline: Boolean = true,
+    subtitle: String? = null,
+) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        UserAvatar(partner, size = 72.dp, showOnline = true, isOnline = isOnline)
+        UserAvatar(partner, size = 72.dp, showOnline = showOnline, isOnline = isOnline)
         Spacer(Modifier.height(12.dp))
         Text(
-            if (!partner?.nickname.isNullOrBlank()) "@${partner!!.nickname}" else "Пользователь",
+            partner?.displayName?.takeIf { it.isNotBlank() }
+                ?: if (!partner?.nickname.isNullOrBlank()) "@${partner!!.nickname}" else "Чат",
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.SemiBold,
         )
-        val fullName = listOfNotNull(
-            partner?.firstName?.takeIf { it.isNotBlank() },
-            partner?.lastName?.takeIf { it.isNotBlank() },
-        ).joinToString(" ")
-        if (fullName.isNotBlank()) {
-            Spacer(Modifier.height(4.dp))
+        if (!subtitle.isNullOrBlank()) {
+            Spacer(modifier = Modifier.height(4.dp))
             Text(
-                fullName,
+                subtitle,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        } else {
+            val fullName = listOfNotNull(
+                partner?.firstName?.takeIf { it.isNotBlank() },
+                partner?.lastName?.takeIf { it.isNotBlank() },
+            ).joinToString(" ")
+            if (fullName.isNotBlank() && fullName != partner?.displayName) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    fullName,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }

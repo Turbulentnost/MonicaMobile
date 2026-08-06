@@ -96,18 +96,18 @@ fun RegistrationScreen(
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Spacer(Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(8.dp))
         Text(
             "Шаг ${step + 1} из $TOTAL_STEPS",
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Spacer(Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(8.dp))
         LinearProgressIndicator(
             progress = { (step + 1f) / TOTAL_STEPS },
             modifier = Modifier.fillMaxWidth(),
         )
-        Spacer(Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(24.dp))
 
         when (step) {
             0 -> EmailStep(
@@ -195,12 +195,12 @@ fun RegistrationScreen(
         }
 
         if (!error.isNullOrBlank()) {
-            Spacer(Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(12.dp))
             Text(error!!, color = MaterialTheme.colorScheme.error)
         }
 
         if (step < 3) {
-            Spacer(Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(8.dp))
             TextButton(
                 onClick = {
                     vm.clearError()
@@ -222,15 +222,22 @@ private fun EmailStep(
     loading: Boolean,
     onNext: () -> Unit,
 ) {
+    Text(
+        "Введите email — отправим код подтверждения.",
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(modifier = Modifier.height(12.dp))
     OutlinedTextField(
         value = email,
         onValueChange = onEmailChange,
         label = { Text("Email") },
+        placeholder = { Text("name@example.com") },
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
         singleLine = true,
         modifier = Modifier.fillMaxWidth(),
     )
-    Spacer(Modifier.height(16.dp))
+    Spacer(modifier = Modifier.height(16.dp))
     Button(
         onClick = onNext,
         enabled = !loading && email.isNotBlank(),
@@ -256,24 +263,25 @@ private fun CodeStep(
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
     if (!debugCode.isNullOrBlank()) {
-        Spacer(Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(8.dp))
         Text(
-            "Debug-код: $debugCode",
+            "Dev-режим: код — $debugCode",
             style = MaterialTheme.typography.bodySmall,
             fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.primary,
         )
     }
-    Spacer(Modifier.height(12.dp))
+    Spacer(modifier = Modifier.height(12.dp))
     OutlinedTextField(
         value = code,
         onValueChange = onCodeChange,
         label = { Text("Код из письма") },
+        placeholder = { Text("000000") },
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
         singleLine = true,
         modifier = Modifier.fillMaxWidth(),
     )
-    Spacer(Modifier.height(16.dp))
+    Spacer(modifier = Modifier.height(16.dp))
     Button(
         onClick = onNext,
         enabled = !loading && code.length == 6,
@@ -306,7 +314,7 @@ private fun ProfileStep(
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
-    Spacer(Modifier.height(12.dp))
+    Spacer(modifier = Modifier.height(12.dp))
     RegistrationField(firstName, onFirstNameChange, "Имя *")
     RegistrationField(lastName, onLastNameChange, "Фамилия *")
     RegistrationField(nickname, onNicknameChange, "Никнейм *")
@@ -319,7 +327,7 @@ private fun ProfileStep(
         singleLine = true,
         modifier = Modifier.fillMaxWidth(),
     )
-    Spacer(Modifier.height(12.dp))
+    Spacer(modifier = Modifier.height(12.dp))
     RegistrationField(city, onCityChange, "Город")
     OutlinedTextField(
         value = birthDate,
@@ -330,7 +338,7 @@ private fun ProfileStep(
         singleLine = true,
         modifier = Modifier.fillMaxWidth(),
     )
-    Spacer(Modifier.height(16.dp))
+    Spacer(modifier = Modifier.height(16.dp))
     Button(
         onClick = onNext,
         enabled = !loading &&
@@ -360,7 +368,7 @@ private fun AvatarStep(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.fillMaxWidth(),
         )
-        Spacer(Modifier.height(20.dp))
+        Spacer(modifier = Modifier.height(20.dp))
         Box(
             modifier = Modifier
                 .size(140.dp)
@@ -385,7 +393,7 @@ private fun AvatarStep(
                 )
             }
         }
-        Spacer(Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(12.dp))
         TextButton(
             onClick = onPickPhoto,
             enabled = !loading,
@@ -393,7 +401,7 @@ private fun AvatarStep(
         ) {
             Text(if (photoUri == null) "Выбрать фото" else "Изменить фото")
         }
-        Spacer(Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(12.dp))
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -437,5 +445,5 @@ private fun RegistrationField(
         singleLine = true,
         modifier = Modifier.fillMaxWidth(),
     )
-    Spacer(Modifier.height(12.dp))
+    Spacer(modifier = Modifier.height(12.dp))
 }

@@ -1,7 +1,15 @@
 package com.example.monica.ui.components
 
 import android.view.ViewGroup
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -33,7 +41,13 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -48,6 +62,7 @@ import com.example.monica.data.CallAudioRoute
 import com.example.monica.data.CallUiState
 import com.example.monica.data.CallUiStatus
 import com.example.monica.data.call.CallController
+import kotlinx.coroutines.delay
 import org.webrtc.EglBase
 import org.webrtc.RendererCommon
 import org.webrtc.SurfaceViewRenderer
@@ -171,6 +186,25 @@ private fun ActiveCallScreen(
     }
     val showVideoStage = state.isVideo
     val egl = callController.eglBaseContext()
+    // В активном видеозвонке нижняя панель прячется через 3с; тап по экрану — снова показать.
+    val autoHideControls = showVideoStage && state.status == CallUiStatus.Active
+    var controlsVisible by remember(autoHideControls) { mutableStateOf(true) }
+    var controlsEpoch by remember { mutableIntStateOf(0) }
+
+    fun bumpControls() {
+        controlsVisible = true
+        controlsEpoch += 1
+    }
+
+    LaunchedEffect(autoHideControls, controlsVisible, controlsEpoch) {
+        if (!autoHideControls) {
+            controlsVisible = true
+            return@LaunchedEffect
+        }
+        if (!controlsVisible) return@LaunchedEffect
+        delay(3_000)
+        controlsVisible = false
+    }
 
     Surface(
         modifier = Modifier
@@ -179,7 +213,21 @@ private fun ActiveCallScreen(
             .then(if (state.isVideo) Modifier.keepScreenOn() else Modifier),
         color = Color(0xFF121418),
     ) {
-        Box(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .then(
+                    if (autoHideControls) {
+                        Modifier.clickable(
+                            indication = null,
+                            interactionSource = remember { MutableInteractionSource() },
+                            onClick = { bumpControls() },
+                        )
+                    } else {
+                        Modifier
+                    },
+                ),
+        ) {
             if (showVideoStage && egl != null) {
                 VideoCallStage(
                     eglContext = egl,
@@ -190,7 +238,10 @@ private fun ActiveCallScreen(
                     canSwitchCamera = state.canSwitchCamera,
                     hasRemoteVideo = state.hasRemoteVideo,
                     partnerNickname = state.partner?.nickname,
-                    onSwitchCamera = onSwitchCamera,
+                    onSwitchCamera = {
+                        bumpControls()
+                        onSwitchCamera()
+                    },
                 )
             } else {
                 Column(
@@ -222,91 +273,117 @@ private fun ActiveCallScreen(
                 }
             }
 
-            Column(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .background(Color(0xCC0E1014))
-                    .padding(horizontal = 16.dp, vertical = 20.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
+            AnimatedVisibility(
+                visible = !autoHideControls || controlsVisible,
+                modifier = Modifier.align(Alignment.BottomCenter),
+                enter = slideInVertically(
+                    animationSpec = tween(220),
+                    initialOffsetY = { it },
+                ) + fadeIn(animationSpec = tween(180)),
+                exit = slideOutVertically(
+                    animationSpec = tween(220),
+                    targetOffsetY = { it },
+                ) + fadeOut(animationSpec = tween(160)),
             ) {
-                if (showVideoStage) {
-                    Text(
-                        "@${state.partner?.nickname ?: "пользователь"} · $statusText",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color(0xFFD0D5DD),
-                    )
-                    Spacer(modifier = Modifier.height(14.dp))
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                    verticalAlignment = Alignment.CenterVertically,
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xCC0E1014))
+                        .padding(horizontal = 16.dp, vertical = 20.dp)
+                        .clickable(
+                            indication = null,
+                            interactionSource = remember { MutableInteractionSource() },
+                            onClick = { bumpControls() },
+                        ),
+                    horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    CallRoundButton(
-                        color = Color(0xFF2A2F38),
-                        onClick = onToggleMute,
-                        contentDescription = if (state.muted) "Включить микрофон" else "Выключить микрофон",
-                        size = 56.dp,
+                    if (showVideoStage) {
+                        Text(
+                            "@${state.partner?.nickname ?: "пользователь"} · $statusText",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Color(0xFFD0D5DD),
+                        )
+                        Spacer(modifier = Modifier.height(14.dp))
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Icon(
-                            if (state.muted) Icons.Filled.MicOff else Icons.Filled.Mic,
-                            contentDescription = null,
-                            tint = Color.White,
+                        CallRoundButton(
+                            color = Color(0xFF2A2F38),
+                            onClick = {
+                                bumpControls()
+                                onToggleMute()
+                            },
+                            contentDescription = if (state.muted) "Включить микрофон" else "Выключить микрофон",
+                            size = 56.dp,
+                        ) {
+                            Icon(
+                                if (state.muted) Icons.Filled.MicOff else Icons.Filled.Mic,
+                                contentDescription = null,
+                                tint = Color.White,
+                            )
+                        }
+                        CallRoundButton(
+                            color = if (state.cameraEnabled) Color(0xFF2A2F38) else Color(0xFF3A3030),
+                            onClick = {
+                                bumpControls()
+                                onToggleCamera()
+                            },
+                            contentDescription = if (state.cameraEnabled) "Выключить камеру" else "Включить камеру",
+                            size = 56.dp,
+                        ) {
+                            Icon(
+                                if (state.cameraEnabled) Icons.Filled.Videocam else Icons.Filled.VideocamOff,
+                                contentDescription = null,
+                                tint = Color.White,
+                            )
+                        }
+                        CallRoundButton(
+                            color = Color(0xFFE53935),
+                            onClick = onEnd,
+                            contentDescription = "Завершить",
+                            size = 68.dp,
+                        ) {
+                            Icon(Icons.Filled.CallEnd, contentDescription = null, tint = Color.White)
+                        }
+                        CallRoundButton(
+                            color = Color(0xFF2A2F38),
+                            onClick = {
+                                bumpControls()
+                                onCycleAudioRoute()
+                            },
+                            contentDescription = audioRouteLabel(state.audioRoute),
+                            size = 56.dp,
+                        ) {
+                            Icon(
+                                audioRouteIcon(state.audioRoute),
+                                contentDescription = null,
+                                tint = Color.White,
+                            )
+                        }
+                    }
+                    if (!state.isVideo) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        TextButton(onClick = onUpgradeToVideo) {
+                            Icon(
+                                Icons.Filled.Videocam,
+                                contentDescription = null,
+                                tint = Color(0xFFB8C0CC),
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Видео", color = Color(0xFFB8C0CC))
+                        }
+                    } else {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            audioRouteLabel(state.audioRoute),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color(0xFF8A93A3),
                         )
                     }
-                    CallRoundButton(
-                        color = if (state.cameraEnabled) Color(0xFF2A2F38) else Color(0xFF3A3030),
-                        onClick = onToggleCamera,
-                        contentDescription = if (state.cameraEnabled) "Выключить камеру" else "Включить камеру",
-                        size = 56.dp,
-                    ) {
-                        Icon(
-                            if (state.cameraEnabled) Icons.Filled.Videocam else Icons.Filled.VideocamOff,
-                            contentDescription = null,
-                            tint = Color.White,
-                        )
-                    }
-                    CallRoundButton(
-                        color = Color(0xFFE53935),
-                        onClick = onEnd,
-                        contentDescription = "Завершить",
-                        size = 68.dp,
-                    ) {
-                        Icon(Icons.Filled.CallEnd, contentDescription = null, tint = Color.White)
-                    }
-                    CallRoundButton(
-                        color = Color(0xFF2A2F38),
-                        onClick = onCycleAudioRoute,
-                        contentDescription = audioRouteLabel(state.audioRoute),
-                        size = 56.dp,
-                    ) {
-                        Icon(
-                            audioRouteIcon(state.audioRoute),
-                            contentDescription = null,
-                            tint = Color.White,
-                        )
-                    }
-                }
-                if (!state.isVideo) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    TextButton(onClick = onUpgradeToVideo) {
-                        Icon(
-                            Icons.Filled.Videocam,
-                            contentDescription = null,
-                            tint = Color(0xFFB8C0CC),
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Видео", color = Color(0xFFB8C0CC))
-                    }
-                } else {
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        audioRouteLabel(state.audioRoute),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color(0xFF8A93A3),
-                    )
                 }
             }
         }
@@ -325,67 +402,46 @@ private fun VideoCallStage(
     partnerNickname: String?,
     onSwitchCamera: () -> Unit,
 ) {
-    Box(modifier = Modifier.fillMaxSize()) {
-        // Всегда вешаем remote sink — иначе видео звонящего не появится у абонента без камеры.
-        key("remote-$videoEpoch") {
-            WebRtcVideo(
-                eglContext = eglContext,
-                mirror = false,
-                modifier = Modifier.fillMaxSize(),
-                onBind = { callController.attachRemoteSink(it) },
-                onUnbind = { callController.detachRemoteSink(it) },
-            )
-        }
-        if (!hasRemoteVideo) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color(0xE61A1E26)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        "@${partnerNickname ?: "пользователь"}",
-                        color = Color.White,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        "У пользователя отключена камера",
-                        color = Color(0xFF9AA3B2),
-                    )
-                }
-            }
-        }
+    // true = собеседник на весь экран, мы в PiP; false = наоборот.
+    var remoteIsPrimary by remember { mutableStateOf(true) }
 
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(end = 16.dp, bottom = 150.dp)
-                .size(width = 110.dp, height = 160.dp)
-                .clip(RoundedCornerShape(14.dp))
-                .background(Color(0xFF232833)),
-        ) {
-            key("local-$videoEpoch-$cameraEnabled-$usingFrontCamera") {
+    Box(modifier = Modifier.fillMaxSize()) {
+        // Основной (полноэкранный) поток.
+        if (remoteIsPrimary) {
+            key("remote-primary-$videoEpoch") {
+                WebRtcVideo(
+                    eglContext = eglContext,
+                    mirror = false,
+                    zOrderMediaOverlay = false,
+                    modifier = Modifier.fillMaxSize(),
+                    onBind = { callController.attachRemoteSink(it) },
+                    onUnbind = { callController.detachRemoteSink(it) },
+                )
+            }
+            if (!hasRemoteVideo) {
+                CameraOffPlaceholder(
+                    modifier = Modifier.fillMaxSize(),
+                    title = "@${partnerNickname ?: "пользователь"}",
+                    subtitle = "У пользователя отключена камера",
+                )
+            }
+        } else {
+            key("local-primary-$videoEpoch-$cameraEnabled-$usingFrontCamera") {
                 if (cameraEnabled) {
                     WebRtcVideo(
                         eglContext = eglContext,
                         mirror = usingFrontCamera,
+                        zOrderMediaOverlay = false,
                         modifier = Modifier.fillMaxSize(),
                         onBind = { callController.attachLocalSink(it) },
                         onUnbind = { callController.detachLocalSink(it) },
                     )
                 } else {
-                    Box(
+                    CameraOffPlaceholder(
                         modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            "Камера выкл.",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Color(0xFFB8C0CC),
-                        )
-                    }
+                        title = "Вы",
+                        subtitle = "Камера выключена",
+                    )
                 }
             }
             if (cameraEnabled && canSwitchCamera) {
@@ -393,17 +449,116 @@ private fun VideoCallStage(
                     onClick = onSwitchCamera,
                     modifier = Modifier
                         .align(Alignment.TopEnd)
-                        .size(36.dp)
+                        .padding(12.dp)
+                        .size(40.dp)
                         .semantics { contentDescription = "Переключить камеру" },
                 ) {
                     Icon(
                         Icons.Filled.Cameraswitch,
                         contentDescription = null,
                         tint = Color.White,
-                        modifier = Modifier.size(20.dp),
+                        modifier = Modifier.size(22.dp),
                     )
                 }
             }
+        }
+
+        // Маленькое окошко — тап меняет местами с основным.
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = 16.dp, bottom = 150.dp)
+                .size(width = 110.dp, height = 160.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .background(Color(0xFF232833))
+                .clickable(
+                    indication = null,
+                    interactionSource = remember { MutableInteractionSource() },
+                    onClick = { remoteIsPrimary = !remoteIsPrimary },
+                ),
+        ) {
+            if (remoteIsPrimary) {
+                key("local-pip-$videoEpoch-$cameraEnabled-$usingFrontCamera") {
+                    if (cameraEnabled) {
+                        WebRtcVideo(
+                            eglContext = eglContext,
+                            mirror = usingFrontCamera,
+                            zOrderMediaOverlay = true,
+                            modifier = Modifier.fillMaxSize(),
+                            onBind = { callController.attachLocalSink(it) },
+                            onUnbind = { callController.detachLocalSink(it) },
+                        )
+                    } else {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                "Камера выкл.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFFB8C0CC),
+                            )
+                        }
+                    }
+                }
+                if (cameraEnabled && canSwitchCamera) {
+                    IconButton(
+                        onClick = onSwitchCamera,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .size(36.dp)
+                            .semantics { contentDescription = "Переключить камеру" },
+                    ) {
+                        Icon(
+                            Icons.Filled.Cameraswitch,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                }
+            } else {
+                key("remote-pip-$videoEpoch") {
+                    WebRtcVideo(
+                        eglContext = eglContext,
+                        mirror = false,
+                        zOrderMediaOverlay = true,
+                        modifier = Modifier.fillMaxSize(),
+                        onBind = { callController.attachRemoteSink(it) },
+                        onUnbind = { callController.detachRemoteSink(it) },
+                    )
+                }
+                if (!hasRemoteVideo) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            "Нет видео",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color(0xFFB8C0CC),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CameraOffPlaceholder(
+    modifier: Modifier,
+    title: String,
+    subtitle: String,
+) {
+    Box(
+        modifier = modifier.background(Color(0xE61A1E26)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(title, color = Color.White, fontWeight = FontWeight.SemiBold)
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(subtitle, color = Color(0xFF9AA3B2))
         }
     }
 }
@@ -413,6 +568,7 @@ private fun WebRtcVideo(
     eglContext: EglBase.Context,
     mirror: Boolean,
     modifier: Modifier = Modifier,
+    zOrderMediaOverlay: Boolean = false,
     onBind: (SurfaceViewRenderer) -> Unit,
     onUnbind: (SurfaceViewRenderer) -> Unit,
 ) {
@@ -428,8 +584,13 @@ private fun WebRtcVideo(
                 setMirror(mirror)
                 setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FILL)
                 setEnableHardwareScaler(true)
+                setZOrderMediaOverlay(zOrderMediaOverlay)
                 onBind(this)
             }
+        },
+        update = { renderer ->
+            renderer.setMirror(mirror)
+            renderer.setZOrderMediaOverlay(zOrderMediaOverlay)
         },
         onRelease = { renderer ->
             onUnbind(renderer)

@@ -1,0 +1,6 @@
+## Скопируйте в local.properties и поправьте sdk.dir под свою машину.
+## API всегда через домен (он указывает на актуальный сервер 159.194.229.101).
+## Не указывайте старый IP 159.194.232.74 — это другой сервер.
+
+sdk.dir=C\:\\Users\\YOU\\AppData\\Local\\Android\\Sdk
+monica.api.base.url=https://metamonica.ru
