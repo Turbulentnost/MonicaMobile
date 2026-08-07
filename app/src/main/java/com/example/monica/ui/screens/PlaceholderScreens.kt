@@ -133,7 +133,7 @@ fun SettingsScreen(
                         style = MaterialTheme.typography.bodyLarge,
                         fontWeight = FontWeight.Medium,
                     )
-                    Spacer(Modifier = Modifier.height(2.dp))
+                    Spacer(Modifier.height(2.dp))
                     Text(
                         text = when {
                             !musicDisplay ->
@@ -154,7 +154,7 @@ fun SettingsScreen(
             }
 
             if (musicDisplay && !listenerEnabled) {
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(Modifier.height(4.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
