@@ -58,6 +58,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -81,11 +82,13 @@ import com.example.monica.ui.util.TimeFormat
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-private val ChatGlassFill = Color(0x28FFFFFF)
-private val ChatGlassBorder = Color(0x55E8D5B0)
-private val ChatGlassDivider = Color(0x66E8D5B0)
+private val ChatGlassFill = Color(0x45FFFFFF)
+private val ChatGlassBorder = Color(0x66E8D5B0)
+private val ChatGlassDivider = Color(0x77E8D5B0)
 private val ChatListGlassShape = RoundedCornerShape(18.dp)
-private val ChatHeaderScrim = Color(0x66000000)
+private val ChatHeaderScrim = Color(0x88000000)
+private val ChatListBgScrim = Color(0x66040810)
+private val ChatListBgBlur = 22.dp
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -148,8 +151,16 @@ fun ChatListScreen(
         Image(
             painter = painterResource(R.drawable.chat_list_bg),
             contentDescription = null,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .blur(ChatListBgBlur),
             contentScale = ContentScale.Crop,
+        )
+        // Затемнение поверх фона — читаемость на API < 31, где blur недоступен.
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(ChatListBgScrim),
         )
 
         ModalNavigationDrawer(

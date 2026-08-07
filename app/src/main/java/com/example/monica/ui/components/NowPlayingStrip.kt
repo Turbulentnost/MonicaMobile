@@ -1,6 +1,7 @@
 package com.example.monica.ui.components
 
 import android.content.Intent
+import android.net.Uri
 import android.provider.Settings
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
@@ -9,6 +10,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -104,7 +106,16 @@ fun NowPlayingStripHost(
             exit = fadeOut() + shrinkVertically(),
         ) {
             NotificationAccessPrompt(
-                onOpenSettings = {
+                onOpenAppSettings = {
+                    // Сначала снимают «ограниченные настройки» в карточке приложения.
+                    context.startActivity(
+                        Intent(
+                            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            Uri.parse("package:${context.packageName}"),
+                        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                },
+                onOpenListenerSettings = {
                     context.startActivity(
                         Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
                             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
@@ -134,31 +145,45 @@ fun NowPlayingStripHost(
 
 @Composable
 private fun NotificationAccessPrompt(
-    onOpenSettings: () -> Unit,
+    onOpenAppSettings: () -> Unit,
+    onOpenListenerSettings: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
     ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+        ) {
+            Text(
+                text = "Панель музыки",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Android блокирует доступ к уведомлениям для приложений не из Play Store. " +
+                    "Сначала: Настройки Monica → ⋮ → «Разрешить ограниченные настройки», " +
+                    "затем включите Monica в списке доступа к уведомлениям.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    text = "Разрешите доступ к уведомлениям для панели музыки",
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.weight(1f),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                TextButton(onClick = onOpenSettings) {
-                    Text("Открыть")
-                }
                 TextButton(onClick = onDismiss) {
                     Text("Позже")
+                }
+                TextButton(onClick = onOpenAppSettings) {
+                    Text("О приложении")
+                }
+                TextButton(onClick = onOpenListenerSettings) {
+                    Text("Доступ")
                 }
             }
         }
