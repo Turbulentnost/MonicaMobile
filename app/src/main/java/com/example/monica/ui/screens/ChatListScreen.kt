@@ -2,6 +2,7 @@ package com.example.monica.ui.screens
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -22,6 +23,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
@@ -290,6 +292,8 @@ fun ChatListScreen(
                                 hasPrivateInvite = !chat.isGroup && hasInvite,
                                 isRinging = ringingChatId == chat.id,
                                 isVideoRinging = ringingChatId == chat.id && callState.isVideo,
+                                isUnread = chat.isUnreadFor(vm.session.userId) &&
+                                    ringingChatId != chat.id,
                                 onClick = { onOpenChat(chat.id) },
                                 onAcceptInvite = { vm.acceptInviteForChat(chat.id) },
                             )
@@ -460,6 +464,7 @@ private fun ChatRow(
     hasPrivateInvite: Boolean,
     isRinging: Boolean,
     isVideoRinging: Boolean,
+    isUnread: Boolean,
     onClick: () -> Unit,
     onAcceptInvite: () -> Unit,
 ) {
@@ -541,6 +546,14 @@ private fun ChatRow(
                         },
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                if (isUnread) {
+                    Spacer(Modifier.width(8.dp))
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .background(Color(0xFF7EB6FF), CircleShape),
                     )
                 }
                 if (hasPrivateInvite) {

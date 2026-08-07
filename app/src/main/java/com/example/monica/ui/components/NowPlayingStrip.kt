@@ -114,6 +114,7 @@ fun NowPlayingStripHost(
             )
         }
         AnimatedVisibility(
+            // Репозиторий отдаёт state только при реальном PLAYING/BUFFERING.
             visible = nowPlaying != null && !inCall,
             enter = fadeIn() + expandVertically(),
             exit = fadeOut() + shrinkVertically(),

@@ -60,6 +60,14 @@ data class ChatSummary(
             updatedAt = updatedAt,
         )
     }
+
+    /** Как на вебе: чужое последнее сообщение без read_at. */
+    fun isUnreadFor(userId: String?): Boolean {
+        val lm = lastMessage ?: return false
+        if (userId.isNullOrBlank()) return false
+        if (lm.sender?.id == userId) return false
+        return lm.readAt.isNullOrBlank()
+    }
 }
 
 data class MessageAttachment(

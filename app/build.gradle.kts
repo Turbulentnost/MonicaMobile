@@ -41,8 +41,8 @@ android {
         applicationId = "com.chat.monica"
         minSdk = 24
         targetSdk = 36
-        versionCode = 4
-        versionName = "1.3"
+        versionCode = 5
+        versionName = "1.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -51,41 +51,42 @@ android {
         buildConfigField("String", "UPDATE_GITHUB_REPO", "\"MonicaMobile\"")
     }
 
-    // Soft-update требует одну и ту же подпись, что и уже установленные APK.
-    // По умолчанию — ~/.android/debug.keystore (как у monica-1.1.apk в Releases).
-    // Можно переопределить файлом mobile/upload-keystore.jks + upload-keystore.properties.
+    // Soft-update: все машины должны подписывать ОДНИМ upload-keystore.jks
+    // (лежит в корне mobile/, совпадает с подписью GitHub Releases 1.1+).
+    // Иначе Android: «конфликтует с другим пакетом».
     signingConfigs {
         create("upload") {
             val propsFile = rootProject.file("upload-keystore.properties")
             val projectStore = rootProject.file("upload-keystore.jks")
-            val debugStore = file("${System.getProperty("user.home")}/.android/debug.keystore")
-            if (propsFile.exists() && projectStore.exists()) {
-                val props = mutableMapOf<String, String>()
-                propsFile.readLines().forEach { line ->
-                    val trimmed = line.trim()
-                    if (trimmed.isEmpty() || trimmed.startsWith("#") || "=" !in trimmed) return@forEach
-                    val key = trimmed.substringBefore("=").trim()
-                    val value = trimmed.substringAfter("=").trim()
-                    props[key] = value
-                }
-                storeFile = projectStore
-                storePassword = props["storePassword"]
-                keyAlias = props["keyAlias"]
-                keyPassword = props["keyPassword"]
-            } else {
-                storeFile = debugStore
-                storePassword = "android"
-                keyAlias = "androiddebugkey"
-                keyPassword = "android"
+            check(projectStore.exists()) {
+                "Нет mobile/upload-keystore.jks — скопируйте его вместе с проектом на машину сборки."
             }
+            check(propsFile.exists()) {
+                "Нет mobile/upload-keystore.properties — см. upload-keystore.properties.example"
+            }
+            val props = mutableMapOf<String, String>()
+            propsFile.readLines().forEach { line ->
+                val trimmed = line.trim()
+                if (trimmed.isEmpty() || trimmed.startsWith("#") || "=" !in trimmed) return@forEach
+                val key = trimmed.substringBefore("=").trim()
+                val value = trimmed.substringAfter("=").trim()
+                props[key] = value
+            }
+            storeFile = projectStore
+            storePassword = props.getValue("storePassword")
+            keyAlias = props.getValue("keyAlias")
+            keyPassword = props.getValue("keyPassword")
         }
     }
 
     buildTypes {
+        // Debug тоже тем же ключом — иначе Run из Studio конфликтует с release/GitHub.
+        debug {
+            signingConfig = signingConfigs.getByName("upload")
+        }
         release {
             isMinifyEnabled = false
-            // Важно: release, не debug — иначе Android даёт «несовместимость версий»
-            // при обновлении поверх не-debuggable сборки.
+            // Важно: release, не debuggable — иначе «несовместимость версий».
             signingConfig = signingConfigs.getByName("upload")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

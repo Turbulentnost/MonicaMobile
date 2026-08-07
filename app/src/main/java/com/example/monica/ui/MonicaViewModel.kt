@@ -310,6 +310,19 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
                         if (m.id in idSet) m.copy(readAt = event.readAt, clientStatus = null) else m
                     }
                 }
+                // Снимаем точку непрочитанного в списке чатов.
+                if (idSet.isNotEmpty()) {
+                    _chats.update { list ->
+                        list.map { chat ->
+                            val lm = chat.lastMessage ?: return@map chat
+                            if (lm.id in idSet && lm.readAt.isNullOrBlank()) {
+                                chat.copy(lastMessage = lm.copy(readAt = event.readAt))
+                            } else {
+                                chat
+                            }
+                        }
+                    }
+                }
             }
         }
         viewModelScope.launch {
@@ -331,6 +344,9 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
                 val chatId = currentChatId
                 if (connected && !wasConnected && !chatId.isNullOrBlank()) {
                     refreshOpenChatMessages(chatId)
+                    // Как на вебе: при открытии чата помечаем бэклог прочитанным.
+                    chatSocket.markRead()
+                    clearUnreadPreview(chatId)
                 }
                 wasConnected = connected
             }
@@ -679,13 +695,36 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
             refreshChats()
             return
         }
+        // Если чат уже открыт и это чужое сообщение — сразу считаем прочитанным в превью.
+        val preview = if (
+            chatId == currentChatId &&
+            msg.sender?.id != null &&
+            msg.sender.id != session.userId &&
+            msg.readAt.isNullOrBlank()
+        ) {
+            msg.copy(readAt = msg.sentAt.ifBlank { "read" })
+        } else {
+            msg
+        }
         _chats.update { list ->
             val current = list.find { it.id == chatId } ?: return@update list
             val updated = current.copy(
-                lastMessage = msg,
-                updatedAt = msg.sentAt.ifBlank { current.updatedAt },
+                lastMessage = preview,
+                updatedAt = preview.sentAt.ifBlank { current.updatedAt },
             )
             listOf(updated) + list.filterNot { it.id == chatId }
+        }
+    }
+
+    /** Оптимистично убрать точку непрочитанного у открытого чата. */
+    private fun clearUnreadPreview(chatId: String) {
+        _chats.update { list ->
+            list.map { chat ->
+                if (chat.id != chatId) return@map chat
+                val lm = chat.lastMessage ?: return@map chat
+                if (lm.sender?.id == session.userId || !lm.readAt.isNullOrBlank()) return@map chat
+                chat.copy(lastMessage = lm.copy(readAt = lm.sentAt.ifBlank { "read" }))
+            }
         }
     }
 
@@ -841,9 +880,13 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
         _messages.value = emptyList()
         _pendingScrollToMessageId.value = null
         _highlightedMessageId.value = null
+        clearUnreadPreview(chatId)
         chatSocket.connect(chatId)
         openChatJob = viewModelScope.launch {
             refreshOpenChatMessages(chatId, _pendingScrollToMessageId.value)
+            if (chatSocket.connected.value) {
+                chatSocket.markRead()
+            }
         }
     }
 

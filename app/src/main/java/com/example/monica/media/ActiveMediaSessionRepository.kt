@@ -234,17 +234,21 @@ class ActiveMediaSessionRepository private constructor(
     private fun pickBest(controllers: List<MediaController>): MediaController? {
         fun score(c: MediaController): Int {
             val state = c.playbackState?.state ?: return -1
+            // Без активного пуша/воспроизведения сессия часто «висит» в STOPPED —
+            // такую панель в Monica не показываем.
+            if (!isActivelyPlaying(state)) return -1
             val meta = c.metadata
-            val hasTitle = !meta?.getString(MediaMetadata.METADATA_KEY_TITLE).isNullOrBlank()
-            val hasArtist = !meta?.getString(MediaMetadata.METADATA_KEY_ARTIST).isNullOrBlank()
+            val hasTitle = !meta?.getString(MediaMetadata.METADATA_KEY_TITLE).isNullOrBlank() ||
+                !meta?.getString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE).isNullOrBlank()
+            val hasArtist = !meta?.getString(MediaMetadata.METADATA_KEY_ARTIST).isNullOrBlank() ||
+                !meta?.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST).isNullOrBlank()
             if (!hasTitle && !hasArtist && meta?.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART) == null) {
                 return -1
             }
             return when (state) {
                 PlaybackState.STATE_PLAYING -> 3
                 PlaybackState.STATE_BUFFERING -> 2
-                PlaybackState.STATE_PAUSED -> 1
-                else -> 0
+                else -> -1
             }
         }
         return controllers
@@ -261,7 +265,7 @@ class ActiveMediaSessionRepository private constructor(
         }
         val meta = controller.metadata
         val state = controller.playbackState
-        if (meta == null || state == null) {
+        if (meta == null || state == null || !isActivelyPlaying(state.state)) {
             _nowPlaying.value = null
             return
         }
@@ -286,7 +290,7 @@ class ActiveMediaSessionRepository private constructor(
             if (duration > 0L) pos.coerceAtMost(duration) else pos
         }
         val actions = state.actions
-        val playing = state.state == PlaybackState.STATE_PLAYING
+        val playing = isActivelyPlaying(state.state)
         val canPlayPause = actions and (
             PlaybackState.ACTION_PLAY_PAUSE or
                 PlaybackState.ACTION_PLAY or
@@ -311,6 +315,11 @@ class ActiveMediaSessionRepository private constructor(
         val elapsed = android.os.SystemClock.elapsedRealtime() - state.lastPositionUpdateTime
         val speed = if (state.playbackSpeed == 0f) 1f else state.playbackSpeed
         return base + (elapsed * speed).toLong()
+    }
+
+    /** Только реальное воспроизведение — не paused/stopped «хвосты» без медиа-пуша. */
+    private fun isActivelyPlaying(state: Int): Boolean {
+        return state == PlaybackState.STATE_PLAYING || state == PlaybackState.STATE_BUFFERING
     }
 
     private fun scheduleTicker() {

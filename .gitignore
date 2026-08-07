@@ -16,9 +16,12 @@ local.properties
 .idea/navEditor.xml
 .idea/assetWizardSettings.xml
 
-# Keystore (never commit signing keys)
+# Keystore — общий upload-keystore для soft-update коммитим специально.
 *.jks
 *.keystore
+!upload-keystore.jks
+# Пароль к upload-ключу тоже нужен на всех машинах сборки.
+!upload-keystore.properties
 
 # Native build
 .externalNativeBuild/
