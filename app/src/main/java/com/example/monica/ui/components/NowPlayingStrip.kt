@@ -73,6 +73,7 @@ fun NowPlayingStripHost(
     }
     val nowPlaying by repo.nowPlaying.collectAsStateWithLifecycle()
     val promptVisible by repo.permissionPromptVisible.collectAsStateWithLifecycle()
+    val musicDisplay by repo.musicDisplayEnabled.collectAsStateWithLifecycle()
     val callState by vm.callState.collectAsStateWithLifecycle()
     val inCall = callState.status in listOf(
         CallUiStatus.Outgoing,
@@ -126,7 +127,7 @@ fun NowPlayingStripHost(
         }
         AnimatedVisibility(
             // Репозиторий отдаёт state только при реальном PLAYING/BUFFERING.
-            visible = nowPlaying != null && !inCall,
+            visible = musicDisplay && nowPlaying != null && !inCall,
             enter = fadeIn() + expandVertically(),
             exit = fadeOut() + shrinkVertically(),
         ) {
@@ -165,9 +166,10 @@ private fun NotificationAccessPrompt(
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = "Android блокирует доступ к уведомлениям для приложений не из Play Store. " +
-                    "Сначала: Настройки Monica → ⋮ → «Разрешить ограниченные настройки», " +
-                    "затем включите Monica в списке доступа к уведомлениям.",
+                text = "Чтобы показывать текущий трек, нужен доступ к уведомлениям. " +
+                    "Если Android пишет про ограниченные настройки: карточка Monica → ⋮ → " +
+                    "«Разрешить ограниченные настройки», затем включите Monica в доступе к уведомлениям. " +
+                    "«Позже» — включить можно в меню → Настройки → «Отображать музыку».",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

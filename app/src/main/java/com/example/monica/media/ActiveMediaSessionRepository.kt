@@ -49,6 +49,11 @@ class ActiveMediaSessionRepository private constructor(
     private val _listenerEnabled = MutableStateFlow(false)
     val listenerEnabled: StateFlow<Boolean> = _listenerEnabled.asStateFlow()
 
+    private val _musicDisplayEnabled = MutableStateFlow(
+        prefs.getBoolean(KEY_MUSIC_DISPLAY, true),
+    )
+    val musicDisplayEnabled: StateFlow<Boolean> = _musicDisplayEnabled.asStateFlow()
+
     private val _permissionPromptVisible = MutableStateFlow(false)
     val permissionPromptVisible: StateFlow<Boolean> = _permissionPromptVisible.asStateFlow()
 
@@ -97,7 +102,7 @@ class ActiveMediaSessionRepository private constructor(
         }
         started = true
         refreshListenerAccess()
-        if (_listenerEnabled.value) {
+        if (_musicDisplayEnabled.value && _listenerEnabled.value) {
             runCatching {
                 sessionManager.addOnActiveSessionsChangedListener(
                     sessionsChangedListener,
@@ -127,7 +132,7 @@ class ActiveMediaSessionRepository private constructor(
 
     fun onListenerConnected() {
         refreshListenerAccess()
-        if (_listenerEnabled.value) {
+        if (_musicDisplayEnabled.value && _listenerEnabled.value) {
             runCatching {
                 sessionManager.removeOnActiveSessionsChangedListener(sessionsChangedListener)
             }
@@ -152,16 +157,58 @@ class ActiveMediaSessionRepository private constructor(
 
     fun refreshListenerAccess() {
         _listenerEnabled.value = isNotificationListenerEnabled()
-        if (!_listenerEnabled.value) {
+        if (!_listenerEnabled.value || !_musicDisplayEnabled.value) {
             clearController()
             _nowPlaying.value = null
+        } else if (started) {
+            runCatching {
+                sessionManager.removeOnActiveSessionsChangedListener(sessionsChangedListener)
+            }
+            runCatching {
+                sessionManager.addOnActiveSessionsChangedListener(
+                    sessionsChangedListener,
+                    listenerComponent,
+                    mainHandler,
+                )
+            }
+            refreshSessions()
         }
         updatePermissionPrompt()
     }
 
     fun dismissPermissionPrompt() {
+        prefs.edit()
+            .putBoolean(KEY_PROMPT_DISMISSED, true)
+            .putBoolean(KEY_MUSIC_DISPLAY, false)
+            .apply()
+        _musicDisplayEnabled.value = false
+        _permissionPromptVisible.value = false
+        clearController()
+        _nowPlaying.value = null
+    }
+
+    /**
+     * Переключатель «Отображать музыку» в настройках.
+     * @return true, если системный доступ уже есть; false — нужно открыть системные настройки.
+     */
+    fun setMusicDisplayEnabled(enabled: Boolean): Boolean {
+        prefs.edit().putBoolean(KEY_MUSIC_DISPLAY, enabled).apply()
+        _musicDisplayEnabled.value = enabled
+        if (!enabled) {
+            prefs.edit().putBoolean(KEY_PROMPT_DISMISSED, true).apply()
+            _permissionPromptVisible.value = false
+            clearController()
+            _nowPlaying.value = null
+            runCatching {
+                sessionManager.removeOnActiveSessionsChangedListener(sessionsChangedListener)
+            }
+            return true
+        }
+        // Из настроек баннер не возвращаем — пользователь уже в разделе «Отображать музыку».
         prefs.edit().putBoolean(KEY_PROMPT_DISMISSED, true).apply()
         _permissionPromptVisible.value = false
+        refreshListenerAccess()
+        return _listenerEnabled.value
     }
 
     fun playPause() {
@@ -196,7 +243,7 @@ class ActiveMediaSessionRepository private constructor(
     }
 
     private fun refreshSessions() {
-        if (!_listenerEnabled.value || suppressForCall) {
+        if (!_musicDisplayEnabled.value || !_listenerEnabled.value || suppressForCall) {
             clearController()
             _nowPlaying.value = null
             return
@@ -353,12 +400,14 @@ class ActiveMediaSessionRepository private constructor(
 
     private fun updatePermissionPrompt() {
         val dismissed = prefs.getBoolean(KEY_PROMPT_DISMISSED, false)
-        _permissionPromptVisible.value = !_listenerEnabled.value && !dismissed
+        _permissionPromptVisible.value =
+            _musicDisplayEnabled.value && !_listenerEnabled.value && !dismissed
     }
 
     companion object {
         private const val PREFS = "monica_now_playing"
         private const val KEY_PROMPT_DISMISSED = "listener_prompt_dismissed"
+        private const val KEY_MUSIC_DISPLAY = "music_display_enabled"
         private const val TICK_MS = 400L
 
         @Volatile
