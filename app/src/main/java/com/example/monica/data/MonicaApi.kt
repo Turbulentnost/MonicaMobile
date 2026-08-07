@@ -283,16 +283,22 @@ class MonicaApi(private val sessionStore: SessionStore) {
         return Companion.parseChat(JSONObject(text))
     }
 
+    data class ChatBackgroundUpload(
+        val objectPath: String,
+        val contentUrl: String?,
+        val updatedAt: String?,
+    )
+
     /**
-     * Загружает персональный фон чата (как на вебе: multipart `photo`).
-     * @return pair (background MinIO path, background_url)
+     * Загружает персональный **мобильный** фон чата (отдельно от web).
+     * `platform=mobile` → MinIO `.../bg/{user}/mobile/...`
      */
     fun uploadChatBackground(
         chatId: String,
         bytes: ByteArray,
         fileName: String,
         mimeType: String,
-    ): Pair<String, String?> {
+    ): ChatBackgroundUpload {
         val safeMime = mimeType.ifBlank { "image/jpeg" }.lowercase()
         val safeName = fileName.ifBlank { "background.jpg" }
         val body = MultipartBody.Builder()
@@ -302,14 +308,22 @@ class MonicaApi(private val sessionStore: SessionStore) {
                 safeName,
                 bytes.toRequestBody(safeMime.toMediaType()),
             )
+            .addFormDataPart("platform", "mobile")
             .build()
-        val json = authPost("/api/chats/$chatId/background/", body)
-        return json.optString("background").orEmpty() to
-            json.optString("background_url").takeIf { it.isNotBlank() && it != "null" }
+        val json = authPost("/api/chats/$chatId/background/?platform=mobile", body)
+        return ChatBackgroundUpload(
+            objectPath = json.optString("background_mobile")
+                .ifBlank { json.optString("background") },
+            contentUrl = json.optString("background_mobile_url")
+                .ifBlank { json.optString("background_url") }
+                .takeIf { it.isNotBlank() && it != "null" },
+            updatedAt = json.optString("background_mobile_updated_at")
+                .takeIf { it.isNotBlank() && it != "null" },
+        )
     }
 
     fun deleteChatBackground(chatId: String) {
-        authDelete("/api/chats/$chatId/background/")
+        authDelete("/api/chats/$chatId/background/?platform=mobile")
     }
 
     fun forwardMessages(
@@ -1014,7 +1028,11 @@ class MonicaApi(private val sessionStore: SessionStore) {
                 title = json.optString("title").takeIf { it.isNotBlank() && it != "null" },
                 photo = json.optString("photo").takeIf { it.isNotBlank() && it != "null" },
                 photoUrl = json.optString("photo_url").takeIf { it.isNotBlank() && it != "null" },
-                backgroundUrl = json.optString("background_url")
+                backgroundMobile = json.optString("background_mobile")
+                    .takeIf { it.isNotBlank() && it != "null" },
+                backgroundMobileUrl = json.optString("background_mobile_url")
+                    .takeIf { it.isNotBlank() && it != "null" },
+                backgroundMobileUpdatedAt = json.optString("background_mobile_updated_at")
                     .takeIf { it.isNotBlank() && it != "null" },
                 membersCount = json.optInt("members_count", members.size),
                 members = members,

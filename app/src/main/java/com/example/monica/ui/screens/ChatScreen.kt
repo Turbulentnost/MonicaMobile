@@ -14,6 +14,10 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
@@ -21,6 +25,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -28,17 +33,22 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredHeightIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -53,6 +63,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.automirrored.outlined.Reply
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Videocam
@@ -89,6 +100,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -104,6 +116,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -117,8 +130,10 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.roundToInt
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.ImageLoader
@@ -140,6 +155,7 @@ import com.example.monica.ui.components.AppIcon
 import com.example.monica.ui.components.AttachmentPickerSheet
 import com.example.monica.ui.components.CodeViewerView
 import com.example.monica.ui.components.EmojiPicker
+import com.example.monica.ui.components.FavoritesAvatar
 import com.example.monica.ui.components.ForwardedBundleView
 import com.example.monica.ui.components.ForwardPickerSheet
 import com.example.monica.ui.components.LinkAwareText
@@ -256,10 +272,12 @@ fun ChatScreen(
 
     val chat = chats.find { it.id == chatId }
     val isGroup = chat?.isGroup == true
+    val isFavorites = chat?.isFavoritesChat(myId) == true
     val partner = chat?.partner
-    val isOnline = onlineIds.contains(partner?.id)
+    val isOnline = !isFavorites && onlineIds.contains(partner?.id)
     val lastSeen = lastSeenMap[partner?.id] ?: partner?.lastSeenAt
     val statusText = when {
+        isFavorites -> "Заметки и сохранённое"
         isGroup -> {
             val count = chat?.membersCount ?: 0
             if (count > 0) "$count участников" else "Группа"
@@ -267,31 +285,54 @@ fun ChatScreen(
         isOnline -> "в сети"
         else -> TimeFormat.lastSeen(lastSeen)
     }
-    val headerTitle = chat?.displayTitle ?: "—"
+    val headerTitle = chat?.displayTitleFor(myId) ?: "—"
     val headerAvatar = chat?.avatarUser()
-    val backgroundUrl = chat?.backgroundUrl
+    val backgroundPath = chat?.backgroundMobile
+    val backgroundUrl = chat?.backgroundMobileUrl
+    val backgroundUpdatedAt = chat?.backgroundMobileUpdatedAt
     val incomingInvite = incomingInvites[chatId]
     val isOutgoingPending = outgoingPending.containsKey(chatId)
     val isPrivateActiveHere = privateSessionId != null && privateChatId == chatId
     val callBusy = callState.status !in listOf(CallUiStatus.Idle, CallUiStatus.Ended)
     // Presence выключается, когда приложение собеседника свёрнуто, но
     // входящий звонок всё равно доставляется через FCM и фоновый демон.
-    val canStartCall = !isGroup && !callBusy && partner != null
+    val canStartCall = !isGroup && !isFavorites && !callBusy && partner != null
     val canStartVideo = canStartCall && vm.hasCameraDevice()
     val downloadChatFile = rememberChatFileDownloader(vm.api)
 
     var backgroundFile by remember(chatId) {
-        mutableStateOf(ChatBackgroundCache.getCached(context, chatId, backgroundUrl))
+        mutableStateOf(
+            ChatBackgroundCache.getCached(
+                context,
+                chatId,
+                backgroundPath,
+                backgroundUpdatedAt,
+            ),
+        )
     }
-    LaunchedEffect(chatId, backgroundUrl) {
-        if (backgroundUrl.isNullOrBlank()) {
+    LaunchedEffect(chatId, backgroundPath, backgroundUpdatedAt, backgroundUrl) {
+        if (backgroundPath.isNullOrBlank() || backgroundUrl.isNullOrBlank()) {
             backgroundFile = null
+            if (backgroundPath.isNullOrBlank()) {
+                ChatBackgroundCache.invalidate(context, chatId)
+            }
             return@LaunchedEffect
         }
-        backgroundFile = ChatBackgroundCache.getCached(context, chatId, backgroundUrl)
-            ?: withContext(Dispatchers.IO) {
-                ChatBackgroundCache.getOrFetch(context, vm.api, chatId, backgroundUrl)
-            }
+        backgroundFile = ChatBackgroundCache.getCached(
+            context,
+            chatId,
+            backgroundPath,
+            backgroundUpdatedAt,
+        ) ?: withContext(Dispatchers.IO) {
+            ChatBackgroundCache.getOrFetch(
+                context,
+                vm.api,
+                chatId,
+                backgroundPath,
+                backgroundUrl,
+                backgroundUpdatedAt,
+            )
+        }
     }
 
     var pendingStartMode by remember { mutableStateOf<String?>(null) }
@@ -461,12 +502,16 @@ fun ChatScreen(
                                 .clickable(onClick = onOpenDetails)
                                 .padding(end = 4.dp),
                         ) {
-                            UserAvatar(
-                                headerAvatar,
-                                size = 30.dp,
-                                showOnline = !isGroup,
-                                isOnline = isOnline,
-                            )
+                            if (isFavorites) {
+                                FavoritesAvatar(size = 30.dp)
+                            } else {
+                                UserAvatar(
+                                    headerAvatar,
+                                    size = 30.dp,
+                                    showOnline = !isGroup,
+                                    isOnline = isOnline,
+                                )
+                            }
                             Column(verticalArrangement = Arrangement.Center) {
                                 Text(
                                     headerTitle,
@@ -488,11 +533,12 @@ fun ChatScreen(
                         IconButton(
                             onClick = { requestStartCall("audio") },
                             enabled = canStartCall,
-                            modifier = Modifier.size(40.dp),
+                            modifier = Modifier.size(34.dp),
                         ) {
                             Icon(
                                 Icons.Filled.Call,
                                 contentDescription = "Аудиозвонок",
+                                modifier = Modifier.size(20.dp),
                                 tint = if (canStartCall) {
                                     MaterialTheme.colorScheme.onSurface
                                 } else {
@@ -503,11 +549,12 @@ fun ChatScreen(
                         IconButton(
                             onClick = { requestStartCall("video") },
                             enabled = canStartVideo,
-                            modifier = Modifier.size(40.dp),
+                            modifier = Modifier.size(34.dp),
                         ) {
                             Icon(
                                 Icons.Filled.Videocam,
                                 contentDescription = "Видеозвонок",
+                                modifier = Modifier.size(20.dp),
                                 tint = if (canStartVideo) {
                                     MaterialTheme.colorScheme.onSurface
                                 } else {
@@ -839,25 +886,55 @@ private fun MessageComposer(
     ) {
         val quotePreview = forwardPreview ?: replyPreview
         if (quotePreview != null) {
+            val replyAccent = MaterialTheme.colorScheme.primary
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 6.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant,
+                    .padding(bottom = 6.dp)
+                    .border(
+                        width = 1.dp,
+                        color = replyAccent.copy(alpha = 0.45f),
+                        shape = RoundedCornerShape(16.dp),
+                    ),
+                color = replyAccent.copy(alpha = 0.14f),
                 shape = RoundedCornerShape(16.dp),
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(IntrinsicSize.Min)
+                        .padding(end = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
+                    Box(
+                        modifier = Modifier
+                            .width(4.dp)
+                            .fillMaxHeight()
+                            .background(
+                                replyAccent,
+                                RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp),
+                            ),
+                    )
+                    Icon(
+                        Icons.AutoMirrored.Outlined.Reply,
+                        contentDescription = null,
+                        tint = replyAccent,
+                        modifier = Modifier
+                            .padding(start = 10.dp)
+                            .size(20.dp),
+                    )
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(horizontal = 10.dp, vertical = 9.dp),
+                    ) {
                         Text(
                             if (forwardingMode) {
                                 "Пересылка от ${quotePreview.sender?.displayName.orEmpty()}"
                             } else {
                                 "Ответ для ${quotePreview.sender?.displayName.orEmpty()}"
                             },
-                            color = MaterialTheme.colorScheme.primary,
+                            color = replyAccent,
                             fontWeight = FontWeight.SemiBold,
                             style = MaterialTheme.typography.labelLarge,
                         )
@@ -865,7 +942,7 @@ private fun MessageComposer(
                             messagePreviewText(quotePreview),
                             maxLines = 2,
                             overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = MaterialTheme.colorScheme.onSurface,
                         )
                     }
                     IconButton(
@@ -956,8 +1033,12 @@ private fun MessageComposer(
             }
         }
 
+        // Высота поля ввода не зависит от блока ответа/пересылки сверху.
+        val composerInputMinHeight = 52.dp
         Surface(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .requiredHeightIn(min = composerInputMinHeight),
             shape = RoundedCornerShape(26.dp),
             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.78f),
             tonalElevation = 2.dp,
@@ -965,6 +1046,7 @@ private fun MessageComposer(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .requiredHeightIn(min = composerInputMinHeight)
                     .padding(horizontal = 4.dp, vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -993,11 +1075,13 @@ private fun MessageComposer(
                     enabled = !recording,
                     placeholder = {
                         Text(
-                            when {
+                            text = when {
                                 forwardingMode -> "Добавить комментарий…"
                                 replyPreview != null -> "Напишите ответ…"
                                 else -> "Сообщение"
                             },
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                         )
                     },
                     minLines = 1,
@@ -1492,12 +1576,12 @@ private fun PrivateChatActionButton(
         else -> {
             IconButton(
                 onClick = onInvite,
-                modifier = Modifier.size(40.dp),
+                modifier = Modifier.size(34.dp),
             ) {
                 Icon(
                     imageVector = Icons.Outlined.Lock,
                     contentDescription = "Открыть секретный чат",
-                    modifier = Modifier.size(25.dp),
+                    modifier = Modifier.size(20.dp),
                     tint = MaterialTheme.colorScheme.onSurface,
                 )
             }
@@ -1645,21 +1729,13 @@ private fun MessageBubble(
         )
     }
 
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .animateContentSize()
-            .background(highlightColor, RoundedCornerShape(18.dp))
-            .messageForwardGestures(
-                isOwn = isOwn,
-                selectionMode = selectionMode,
-                onTap = onToggleSelection,
-                onLongPress = onLongPress,
-                onSwipeReply = onSwipeReply,
-            )
-            .padding(vertical = 2.dp, horizontal = 2.dp),
-        horizontalArrangement = if (isOwn) Arrangement.End else Arrangement.Start,
-        verticalAlignment = Alignment.CenterVertically,
+    SwipeReplyHost(
+        isOwn = isOwn,
+        selectionMode = selectionMode,
+        rowHighlight = highlightColor,
+        onTap = onToggleSelection,
+        onLongPress = onLongPress,
+        onSwipeReply = onSwipeReply,
     ) {
         AnimatedVisibility(
             visible = selectionMode && !isOwn,
@@ -1847,53 +1923,172 @@ private fun MessageSelectionCircle(
     }
 }
 
-private fun Modifier.messageForwardGestures(
+@Suppress("DEPRECATION")
+private fun vibrateReplyArmed(context: Context) {
+    val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        context.getSystemService(VibratorManager::class.java)?.defaultVibrator
+    } else {
+        context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+    } ?: return
+    if (!vibrator.hasVibrator()) return
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        vibrator.vibrate(VibrationEffect.createOneShot(18, VibrationEffect.DEFAULT_AMPLITUDE))
+    } else {
+        vibrator.vibrate(18)
+    }
+}
+
+/**
+ * Свайп для ответа: вправо — чужие, влево — свои.
+ * Сообщение едет за пальцем, появляется иконка Reply, при отпускании — пружина назад.
+ */
+@Composable
+private fun SwipeReplyHost(
     isOwn: Boolean,
     selectionMode: Boolean,
+    rowHighlight: Color,
     onTap: () -> Unit,
     onLongPress: () -> Unit,
     onSwipeReply: () -> Unit,
-): Modifier = pointerInput(isOwn, selectionMode) {
-    val swipeThreshold = 76.dp.toPx()
-    val moveTolerance = 14.dp.toPx()
-    coroutineScope {
-        val gestureScope = this
-        awaitEachGesture {
-            // Ссылки в тексте сами обрабатывают long-press (копирование).
-            val down = awaitFirstDown(requireUnconsumed = true)
-            var latestX = down.position.x
-            var moved = false
-            var longPressed = false
-            val longPressJob = gestureScope.launch {
-                delay(500)
-                if (!moved) {
-                    longPressed = true
-                    onLongPress()
-                }
-            }
-            var pressed = true
-            while (pressed) {
-                val event = awaitPointerEvent()
-                val change = event.changes.firstOrNull { it.id == down.id }
-                    ?: event.changes.firstOrNull()
-                if (change != null) {
-                    latestX = change.position.x
-                    if (abs(latestX - down.position.x) > moveTolerance) {
-                        moved = true
-                        longPressJob.cancel()
+    content: @Composable RowScope.() -> Unit,
+) {
+    val context = LocalContext.current
+    val density = LocalDensity.current
+    val maxSwipePx = with(density) { 84.dp.toPx() }
+    val thresholdPx = with(density) { 58.dp.toPx() }
+    val moveTolerancePx = with(density) { 12.dp.toPx() }
+    val onSwipeReplyState = rememberUpdatedState(onSwipeReply)
+    val onTapState = rememberUpdatedState(onTap)
+    val onLongPressState = rememberUpdatedState(onLongPress)
+
+    var dragOffset by remember { mutableFloatStateOf(0f) }
+    var settling by remember { mutableStateOf(false) }
+    val displayOffset by animateFloatAsState(
+        targetValue = dragOffset,
+        animationSpec = if (settling) {
+            spring(
+                dampingRatio = Spring.DampingRatioMediumBouncy,
+                stiffness = Spring.StiffnessMedium,
+            )
+        } else {
+            snap()
+        },
+        label = "swipeReplyOffset",
+        finishedListener = { settling = false },
+    )
+    val progress = (abs(displayOffset) / thresholdPx).coerceIn(0f, 1.25f)
+    val dragTint by animateColorAsState(
+        targetValue = if (abs(displayOffset) > 4f) {
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.10f + 0.16f * progress.coerceAtMost(1f))
+        } else {
+            Color.Transparent
+        },
+        label = "swipeReplyTint",
+    )
+    val replyIconColor = MaterialTheme.colorScheme.primary
+
+    Box(modifier = Modifier.fillMaxWidth()) {
+        Icon(
+            imageVector = Icons.AutoMirrored.Outlined.Reply,
+            contentDescription = null,
+            tint = replyIconColor,
+            modifier = Modifier
+                .align(if (isOwn) Alignment.CenterEnd else Alignment.CenterStart)
+                .padding(horizontal = 14.dp)
+                .size(24.dp)
+                .graphicsLayer {
+                    val p = progress.coerceIn(0f, 1f)
+                    alpha = p
+                    scaleX = 0.65f + 0.35f * p
+                    scaleY = scaleX
+                },
+        )
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .offset { IntOffset(displayOffset.roundToInt(), 0) }
+                .animateContentSize()
+                .background(
+                    if (rowHighlight != Color.Transparent) rowHighlight else dragTint,
+                    RoundedCornerShape(18.dp),
+                )
+                .pointerInput(isOwn, selectionMode, maxSwipePx, thresholdPx) {
+                    coroutineScope {
+                        val gestureScope = this
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = true)
+                            var moved = false
+                            var dragging = false
+                            var longPressed = false
+                            var armed = false
+                            settling = false
+                            val longPressJob = gestureScope.launch {
+                                delay(500)
+                                if (!moved && !dragging) {
+                                    longPressed = true
+                                    onLongPressState.value()
+                                }
+                            }
+                            var pressed = true
+                            while (pressed) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull { it.id == down.id }
+                                    ?: event.changes.firstOrNull()
+                                if (change != null) {
+                                    val dx = change.position.x - down.position.x
+                                    val dy = change.position.y - down.position.y
+                                    if (!dragging &&
+                                        (abs(dx) > moveTolerancePx || abs(dy) > moveTolerancePx)
+                                    ) {
+                                        moved = true
+                                        longPressJob.cancel()
+                                        val correctDir = if (isOwn) dx < 0f else dx > 0f
+                                        if (abs(dx) > abs(dy) * 1.15f && correctDir) {
+                                            dragging = true
+                                        }
+                                    }
+                                    if (dragging) {
+                                        change.consume()
+                                        val clamped = if (isOwn) {
+                                            dx.coerceIn(-maxSwipePx, 0f)
+                                        } else {
+                                            dx.coerceIn(0f, maxSwipePx)
+                                        }
+                                        dragOffset = clamped
+                                        val nowArmed = abs(clamped) >= thresholdPx
+                                        if (nowArmed && !armed) {
+                                            armed = true
+                                            vibrateReplyArmed(context)
+                                        } else if (!nowArmed && armed) {
+                                            armed = false
+                                        }
+                                    }
+                                }
+                                pressed = event.changes.any { it.pressed }
+                            }
+                            longPressJob.cancel()
+                            if (longPressed) {
+                                settling = true
+                                dragOffset = 0f
+                                return@awaitEachGesture
+                            }
+                            val triggered = dragging && abs(dragOffset) >= thresholdPx
+                            if (triggered) {
+                                onSwipeReplyState.value()
+                            } else if (!moved && selectionMode) {
+                                onTapState.value()
+                            }
+                            settling = true
+                            dragOffset = 0f
+                        }
                     }
                 }
-                pressed = event.changes.any { it.pressed }
-            }
-            longPressJob.cancel()
-            if (longPressed) return@awaitEachGesture
-            val delta = latestX - down.position.x
-            val validSwipe = if (isOwn) delta <= -swipeThreshold else delta >= swipeThreshold
-            when {
-                validSwipe -> onSwipeReply()
-                !moved && selectionMode -> onTap()
-            }
-        }
+                .padding(vertical = 2.dp, horizontal = 2.dp),
+            horizontalArrangement = if (isOwn) Arrangement.End else Arrangement.Start,
+            verticalAlignment = Alignment.CenterVertically,
+            content = content,
+        )
     }
 }
 

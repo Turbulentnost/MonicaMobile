@@ -4,6 +4,12 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -40,11 +46,18 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
@@ -60,6 +73,16 @@ import com.example.monica.data.CallUiStatus
 import com.example.monica.media.ActiveMediaSessionRepository
 import com.example.monica.media.NowPlayingUiState
 import com.example.monica.ui.MonicaViewModel
+import com.example.monica.ui.util.ArtworkPalette
+import com.example.monica.ui.util.extractArtworkPalette
+import com.example.monica.ui.util.shiftHue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+private val StripGlassFill = Color(0x22FFFFFF)
+private val StripProgressTrack = Color(0x44E8D5B0)
+private val StripOnGlass = Color.White
+private val StripOnGlassMuted = Color.White.copy(alpha = 0.72f)
 
 @Composable
 fun NowPlayingStripHost(
@@ -108,7 +131,6 @@ fun NowPlayingStripHost(
         ) {
             NotificationAccessPrompt(
                 onOpenAppSettings = {
-                    // Сначала снимают «ограниченные настройки» в карточке приложения.
                     context.startActivity(
                         Intent(
                             Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
@@ -126,7 +148,6 @@ fun NowPlayingStripHost(
             )
         }
         AnimatedVisibility(
-            // Репозиторий отдаёт state только при реальном PLAYING/BUFFERING.
             visible = musicDisplay && nowPlaying != null && !inCall,
             enter = fadeIn() + expandVertically(),
             exit = fadeOut() + shrinkVertically(),
@@ -152,7 +173,7 @@ private fun NotificationAccessPrompt(
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
+        color = StripGlassFill,
     ) {
         Column(
             modifier = Modifier
@@ -163,15 +184,16 @@ private fun NotificationAccessPrompt(
                 text = "Панель музыки",
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.SemiBold,
+                color = StripOnGlass,
             )
-            Spacer(modifier = Modifier.height(4.dp))
+            Spacer(Modifier.height(4.dp))
             Text(
                 text = "Чтобы показывать текущий трек, нужен доступ к уведомлениям. " +
                     "Если Android пишет про ограниченные настройки: карточка Monica → ⋮ → " +
                     "«Разрешить ограниченные настройки», затем включите Monica в доступе к уведомлениям. " +
                     "«Позже» — включить можно в меню → Настройки → «Отображать музыку».",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = StripOnGlassMuted,
             )
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -205,9 +227,103 @@ fun NowPlayingStrip(
     } else {
         0f
     }
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surface,
+
+    var palette by remember(state.title, state.artist) {
+        mutableStateOf(ArtworkPalette.Fallback)
+    }
+    LaunchedEffect(state.artwork, state.title, state.artist) {
+        palette = withContext(Dispatchers.Default) {
+            extractArtworkPalette(state.artwork)
+        }
+    }
+
+    val infinite = rememberInfiniteTransition(label = "np-shimmer")
+    val shimmer by infinite.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(
+                durationMillis = if (state.isPlaying) 2200 else 5200,
+                easing = LinearEasing,
+            ),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "np-shimmer-shift",
+    )
+    val hueSwing by infinite.animateFloat(
+        initialValue = -14f,
+        targetValue = 14f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(
+                durationMillis = if (state.isPlaying) 3200 else 7000,
+                easing = LinearEasing,
+            ),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "np-hue",
+    )
+    val pulse by infinite.animateFloat(
+        initialValue = 0.72f,
+        targetValue = if (state.isPlaying) 1f else 0.82f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(
+                durationMillis = if (state.isPlaying) 1400 else 2800,
+                easing = LinearEasing,
+            ),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "np-pulse",
+    )
+
+    val base = palette.base
+    val deep = palette.deep
+    val bright = palette.bright.shiftHue(if (state.isPlaying) hueSwing else hueSwing * 0.35f)
+    val accent = lerp(palette.average, bright, 0.55f).shiftHue(hueSwing * 0.5f)
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .drawBehind {
+                val w = size.width
+                val h = size.height
+                // База из медианного/среднего тона обложки.
+                drawRect(color = deep.copy(alpha = 0.92f))
+                drawRect(
+                    brush = Brush.verticalGradient(
+                        colors = listOf(
+                            base.copy(alpha = 0.78f * pulse),
+                            deep.copy(alpha = 0.88f),
+                        ),
+                    ),
+                )
+                // Яркий переливающийся блик.
+                val travel = shimmer * (w * 1.55f) - w * 0.35f
+                drawRect(
+                    brush = Brush.linearGradient(
+                        colorStops = arrayOf(
+                            0.0f to Color.Transparent,
+                            0.35f to bright.copy(alpha = if (state.isPlaying) 0.55f else 0.28f),
+                            0.5f to Color.White.copy(alpha = if (state.isPlaying) 0.42f else 0.18f),
+                            0.65f to accent.copy(alpha = if (state.isPlaying) 0.5f else 0.24f),
+                            1.0f to Color.Transparent,
+                        ),
+                        start = Offset(travel, 0f),
+                        end = Offset(travel + w * 0.55f, h),
+                    ),
+                )
+                // Лёгкий диагональный цветной слой для «живости».
+                drawRect(
+                    brush = Brush.linearGradient(
+                        colors = listOf(
+                            bright.copy(alpha = 0.18f * pulse),
+                            Color.Transparent,
+                            accent.copy(alpha = 0.22f * pulse),
+                        ),
+                        start = Offset(0f, 0f),
+                        end = Offset(w, h),
+                    ),
+                )
+            },
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             Row(
@@ -218,12 +334,13 @@ fun NowPlayingStrip(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Artwork(state)
-                Spacer(modifier = Modifier.width(10.dp))
+                Spacer(Modifier.width(10.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = state.title,
                         style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.SemiBold,
+                        color = StripOnGlass,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -231,7 +348,7 @@ fun NowPlayingStrip(
                         Text(
                             text = state.artist,
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = StripOnGlassMuted,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
@@ -271,8 +388,8 @@ fun NowPlayingStrip(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(2.dp),
-                color = MaterialTheme.colorScheme.primary,
-                trackColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
+                color = bright.copy(alpha = 0.95f),
+                trackColor = StripProgressTrack,
             )
         }
     }
@@ -295,13 +412,13 @@ private fun Artwork(state: NowPlayingUiState) {
             modifier = Modifier
                 .size(40.dp)
                 .clip(shape)
-                .background(MaterialTheme.colorScheme.surfaceVariant),
+                .background(StripGlassFill),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
                 Icons.Filled.MusicNote,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                tint = StripOnGlassMuted,
                 modifier = Modifier.size(22.dp),
             )
         }
@@ -328,9 +445,9 @@ private fun TransportButton(
     ) {
         CompositionLocalProvider(
             LocalContentColor provides if (enabled) {
-                MaterialTheme.colorScheme.onSurface
+                StripOnGlass
             } else {
-                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                StripOnGlass.copy(alpha = 0.38f)
             },
         ) {
             content()

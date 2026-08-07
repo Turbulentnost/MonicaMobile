@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
@@ -69,8 +68,9 @@ import com.example.monica.data.AppNotification
 import com.example.monica.data.ChatSummary
 import com.example.monica.data.isVideoMime
 import com.example.monica.ui.MonicaViewModel
+import com.example.monica.data.UserProfile
 import com.example.monica.ui.components.AppIcon
-import com.example.monica.ui.components.MainMenuIcon
+import com.example.monica.ui.components.FavoritesAvatar
 import com.example.monica.ui.components.MonicaDrawerContent
 import com.example.monica.ui.components.NeonInviteBorder
 import com.example.monica.ui.components.NowPlayingStripHost
@@ -88,7 +88,7 @@ import kotlinx.coroutines.launch
 private val ChatGlassFill = Color(0x28FFFFFF)
 private val ChatGlassBorder = Color(0x55E8D5B0)
 private val ChatGlassDivider = Color(0x66E8D5B0)
-private val ChatListGlassShape = RoundedCornerShape(18.dp)
+private val ChatListGlassShape = RoundedCornerShape(12.dp)
 private val ChatGlassStyle = HazeStyle(
     backgroundColor = Color(0xFF121018),
     tint = HazeTint(Color.White.copy(alpha = 0.22f)),
@@ -128,16 +128,21 @@ fun ChatListScreen(
     val appUpdate by vm.appUpdate.collectAsStateWithLifecycle()
     val updateDownloadProgress by vm.updateDownloadProgress.collectAsStateWithLifecycle()
     val ringingChatId = callState.ringingChatId
+    val currentUser by vm.currentUser.collectAsStateWithLifecycle()
 
     var query by remember { mutableStateOf("") }
     val unread = notifications.count { !it.isRead }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
-    var menuPlay by remember { mutableStateOf(false) }
+    val headerUser = currentUser ?: UserProfile(
+        id = vm.session.userId.orEmpty(),
+        nickname = vm.session.nickname.orEmpty(),
+    )
 
     LaunchedEffect(Unit) {
         vm.refreshChats()
         vm.refreshNotifications()
+        if (currentUser == null) vm.loadCurrentUser()
     }
 
     LaunchedEffect(query) {
@@ -145,21 +150,13 @@ fun ChatListScreen(
         vm.searchUsers(query)
     }
 
-    LaunchedEffect(drawerState.currentValue) {
-        if (drawerState.currentValue == DrawerValue.Closed) {
-            menuPlay = false
-        }
-    }
-
     fun openDrawer() {
-        menuPlay = true
         scope.launch { drawerState.open() }
     }
 
     fun closeDrawerAnd(action: () -> Unit) {
         scope.launch {
             drawerState.close()
-            menuPlay = false
             action()
         }
     }
@@ -197,7 +194,6 @@ fun ChatListScreen(
                         onLogout = {
                             scope.launch {
                                 drawerState.close()
-                                menuPlay = false
                                 vm.logout()
                             }
                         },
@@ -212,7 +208,7 @@ fun ChatListScreen(
                             query = query,
                             onQueryChange = { query = it },
                             unread = unread,
-                            menuPlay = menuPlay,
+                            currentUser = headerUser,
                             onMenuClick = { openDrawer() },
                             onNotifications = onOpenNotifications,
                             onCreateGroup = onCreateGroup,
@@ -313,8 +309,13 @@ fun ChatListScreen(
                                 val hasInvite = incomingInvites.containsKey(chat.id)
                                 ChatRow(
                                     chat = chat,
-                                    isOnline = !chat.isGroup && onlineIds.contains(chat.partner?.id),
-                                    hasPrivateInvite = !chat.isGroup && hasInvite,
+                                    currentUserId = vm.session.userId,
+                                    isOnline = !chat.isGroup &&
+                                        !chat.isFavoritesChat(vm.session.userId) &&
+                                        onlineIds.contains(chat.partner?.id),
+                                    hasPrivateInvite = !chat.isGroup &&
+                                        !chat.isFavoritesChat(vm.session.userId) &&
+                                        hasInvite,
                                     isRinging = ringingChatId == chat.id,
                                     isVideoRinging = ringingChatId == chat.id && callState.isVideo,
                                     isUnread = chat.isUnreadFor(vm.session.userId) &&
@@ -354,7 +355,7 @@ private fun ChatListHeader(
     query: String,
     onQueryChange: (String) -> Unit,
     unread: Int,
-    menuPlay: Boolean,
+    currentUser: UserProfile,
     onMenuClick: () -> Unit,
     onNotifications: () -> Unit,
     onCreateGroup: () -> Unit,
@@ -379,10 +380,10 @@ private fun ChatListHeader(
                     onClick = onMenuClick,
                     modifier = Modifier.size(44.dp),
                 ) {
-                    MainMenuIcon(
-                        play = menuPlay,
-                        size = 26.dp,
-                        color = Color.White,
+                    UserAvatar(
+                        user = currentUser,
+                        size = 34.dp,
+                        showOnline = false,
                     )
                 }
 
@@ -391,12 +392,12 @@ private fun ChatListHeader(
                     onValueChange = onQueryChange,
                     modifier = Modifier
                         .weight(1f)
-                        .heightIn(min = 44.dp),
+                        .height(36.dp),
                     singleLine = true,
                     placeholder = {
                         Text(
                             "Поиск…",
-                            style = MaterialTheme.typography.bodyMedium,
+                            style = MaterialTheme.typography.bodySmall,
                             color = Color.White.copy(alpha = 0.65f),
                         )
                     },
@@ -404,12 +405,12 @@ private fun ChatListHeader(
                         Icon(
                             Icons.Outlined.Search,
                             contentDescription = null,
-                            modifier = Modifier.size(20.dp),
+                            modifier = Modifier.size(18.dp),
                             tint = Color.White.copy(alpha = 0.85f),
                         )
                     },
-                    shape = RoundedCornerShape(24.dp),
-                    textStyle = MaterialTheme.typography.bodyMedium.copy(color = Color.White),
+                    shape = RoundedCornerShape(16.dp),
+                    textStyle = MaterialTheme.typography.bodySmall.copy(color = Color.White),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = Color.White,
                         unfocusedTextColor = Color.White,
@@ -466,7 +467,7 @@ private fun ChatListHeader(
                         AppIcon(
                             resId = R.drawable.ic_bell,
                             contentDescription = "Уведомления",
-                            size = 32.dp,
+                            size = 24.dp,
                             tint = Color.White,
                         )
                     }
@@ -484,6 +485,7 @@ private fun ChatListHeader(
 @Composable
 private fun ChatRow(
     chat: ChatSummary,
+    currentUserId: String?,
     isOnline: Boolean,
     hasPrivateInvite: Boolean,
     isRinging: Boolean,
@@ -492,9 +494,11 @@ private fun ChatRow(
     onClick: () -> Unit,
     onAcceptInvite: () -> Unit,
 ) {
+    val favorites = chat.isFavoritesChat(currentUserId)
     val preview = when {
         isRinging -> if (isVideoRinging) "Входящий видеозвонок…" else "Входящий аудиозвонок…"
         hasPrivateInvite -> "Приглашение в приватный чат"
+        favorites && chat.lastMessage == null -> "Заметки и сохранённое"
         chat.lastMessage == null -> "Нет сообщений"
         chat.lastMessage.messageType == "photo" -> "Фото"
         chat.lastMessage.messageType == "voice" -> "Голосовое сообщение"
@@ -522,7 +526,7 @@ private fun ChatRow(
     NeonInviteBorder(
         enabled = hasPrivateInvite,
         modifier = Modifier.fillMaxWidth(),
-        corner = 18.dp,
+        corner = 12.dp,
     ) {
         GlassPanel(modifier = Modifier.fillMaxWidth()) {
             Row(
@@ -532,32 +536,48 @@ private fun ChatRow(
                     .padding(horizontal = 12.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                UserAvatar(
-                    chat.avatarUser(),
-                    size = 42.dp,
-                    showOnline = !chat.isGroup,
-                    isOnline = isOnline,
-                )
+                if (favorites) {
+                    FavoritesAvatar(size = 42.dp)
+                } else {
+                    UserAvatar(
+                        chat.avatarUser(),
+                        size = 42.dp,
+                        showOnline = !chat.isGroup,
+                        isOnline = isOnline,
+                    )
+                }
                 Spacer(Modifier.width(12.dp))
                 Column(
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.Center,
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(verticalAlignment = Alignment.Top) {
                         Text(
-                            text = chat.displayTitle,
+                            text = chat.displayTitleFor(currentUserId),
                             fontWeight = FontWeight.SemiBold,
                             color = Color.White,
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(end = 8.dp),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
-                        if (time.isNotBlank()) {
-                            Text(
-                                time,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = Color.White.copy(alpha = 0.7f),
-                            )
+                        Column(horizontalAlignment = Alignment.End) {
+                            if (time.isNotBlank()) {
+                                Text(
+                                    time,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color.White.copy(alpha = 0.7f),
+                                )
+                            }
+                            if (isUnread) {
+                                Box(
+                                    modifier = Modifier
+                                        .padding(top = 4.dp, end = 6.dp)
+                                        .size(8.dp)
+                                        .background(Color(0xFF7EB6FF), CircleShape),
+                                )
+                            }
                         }
                     }
                     Text(
@@ -570,14 +590,6 @@ private fun ChatRow(
                         },
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                if (isUnread) {
-                    Spacer(Modifier.width(8.dp))
-                    Box(
-                        modifier = Modifier
-                            .size(8.dp)
-                            .background(Color(0xFF7EB6FF), CircleShape),
                     )
                 }
                 if (hasPrivateInvite) {

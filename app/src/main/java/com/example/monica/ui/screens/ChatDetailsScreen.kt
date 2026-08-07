@@ -66,6 +66,7 @@ import com.example.monica.data.MessageItem
 import com.example.monica.data.UserProfile
 import com.example.monica.ui.MonicaViewModel
 import com.example.monica.ui.components.CachedMediaImage
+import com.example.monica.ui.components.FavoritesAvatar
 import com.example.monica.ui.components.MonicaAppBar
 import com.example.monica.ui.components.NowPlayingStripHost
 import com.example.monica.ui.components.PhotoLightbox
@@ -115,8 +116,9 @@ fun ChatDetailsScreen(
     val chat = chats.find { it.id == chatId }
     val partner = chat?.partner
     val isGroup = chat?.isGroup == true
-    val isOnline = onlineIds.contains(partner?.id)
-    val hasCustomBg = !chat?.backgroundUrl.isNullOrBlank()
+    val isFavorites = chat?.isFavoritesChat(vm.session.userId) == true
+    val isOnline = !isFavorites && onlineIds.contains(partner?.id)
+    val hasCustomBg = !chat?.backgroundMobile.isNullOrBlank()
     val context = LocalContext.current
 
     var tabIndex by remember { mutableIntStateOf(0) }
@@ -312,11 +314,16 @@ fun ChatDetailsScreen(
                 PartnerHeader(
                     partner = if (isGroup) chat?.avatarUser() else partner,
                     isOnline = isOnline,
-                    showOnline = !isGroup,
-                    subtitle = if (isGroup) {
-                        val count = chat?.membersCount ?: 0
-                        if (count > 0) "$count участников" else "Группа"
-                    } else null,
+                    showOnline = !isGroup && !isFavorites,
+                    isFavorites = isFavorites,
+                    subtitle = when {
+                        isFavorites -> "Заметки и сохранённое"
+                        isGroup -> {
+                            val count = chat?.membersCount ?: 0
+                            if (count > 0) "$count участников" else "Группа"
+                        }
+                        else -> null
+                    },
                 )
             }
             item {
@@ -557,6 +564,7 @@ private fun PartnerHeader(
     partner: UserProfile?,
     isOnline: Boolean,
     showOnline: Boolean = true,
+    isFavorites: Boolean = false,
     subtitle: String? = null,
 ) {
     Column(
@@ -565,11 +573,18 @@ private fun PartnerHeader(
             .padding(horizontal = 16.dp, vertical = 16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        UserAvatar(partner, size = 72.dp, showOnline = showOnline, isOnline = isOnline)
+        if (isFavorites) {
+            FavoritesAvatar(size = 72.dp)
+        } else {
+            UserAvatar(partner, size = 72.dp, showOnline = showOnline, isOnline = isOnline)
+        }
         Spacer(Modifier.height(12.dp))
         Text(
-            partner?.displayName?.takeIf { it.isNotBlank() }
-                ?: if (!partner?.nickname.isNullOrBlank()) "@${partner!!.nickname}" else "Чат",
+            when {
+                isFavorites -> "Избранное"
+                else -> partner?.displayName?.takeIf { it.isNotBlank() }
+                    ?: if (!partner?.nickname.isNullOrBlank()) "@${partner!!.nickname}" else "Чат"
+            },
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.SemiBold,
         )

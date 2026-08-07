@@ -8,27 +8,50 @@ import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Локальный кэш персонального фона чата.
- * Ключ — chatId; meta хранит sourceUrl, чтобы перекачать при смене URL на сервере.
+ * Локальный кэш мобильного фона чата.
+ *
+ * Инвалидация: если в БД изменились [objectPath] (название/путь в MinIO)
+ * или [updatedAt], файл перекачивается из MinIO заново.
+ * Presigned URL в мета не ключ — он может ротироваться без смены фона.
  */
 object ChatBackgroundCache {
-    private const val DIR = "chat-backgrounds"
+    private const val DIR = "chat-backgrounds-mobile"
     private const val TAG = "MonicaChatBg"
     private val inflight = ConcurrentHashMap<String, Any>()
 
-    fun getCached(context: Context, chatId: String, sourceUrl: String?): File? {
-        if (chatId.isBlank()) return null
+    data class Version(
+        val objectPath: String?,
+        val updatedAt: String?,
+    )
+
+    fun getCached(
+        context: Context,
+        chatId: String,
+        objectPath: String?,
+        updatedAt: String?,
+    ): File? {
+        if (chatId.isBlank() || objectPath.isNullOrBlank()) return null
         val file = imageFile(context, chatId)
         if (!file.exists() || file.length() == 0L) return null
-        val metaUrl = readMeta(context, chatId)?.sourceUrl
-        if (!sourceUrl.isNullOrBlank() && !metaUrl.isNullOrBlank() && metaUrl != sourceUrl) {
+        val meta = readMeta(context, chatId) ?: return null
+        if (meta.objectPath != objectPath) return null
+        if (!updatedAt.isNullOrBlank() &&
+            !meta.updatedAt.isNullOrBlank() &&
+            meta.updatedAt != updatedAt
+        ) {
             return null
         }
         return file
     }
 
-    fun putBytes(context: Context, chatId: String, bytes: ByteArray, sourceUrl: String?): File? {
-        if (chatId.isBlank() || bytes.isEmpty()) return null
+    fun putBytes(
+        context: Context,
+        chatId: String,
+        bytes: ByteArray,
+        objectPath: String?,
+        updatedAt: String?,
+    ): File? {
+        if (chatId.isBlank() || bytes.isEmpty() || objectPath.isNullOrBlank()) return null
         return try {
             val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
             bitmap.recycle()
@@ -42,7 +65,7 @@ object ChatBackgroundCache {
                 target.writeBytes(bytes)
                 tmp.delete()
             }
-            writeMeta(context, chatId, sourceUrl.orEmpty())
+            writeMeta(context, chatId, objectPath, updatedAt.orEmpty())
             target.takeIf { it.exists() && it.length() > 0L }
         } catch (exc: Exception) {
             Log.w(TAG, "putBytes failed: $chatId", exc)
@@ -60,18 +83,22 @@ object ChatBackgroundCache {
         context: Context,
         api: MonicaApi,
         chatId: String,
-        sourceUrl: String?,
+        objectPath: String?,
+        contentUrl: String?,
+        updatedAt: String?,
     ): File? {
-        if (chatId.isBlank() || sourceUrl.isNullOrBlank()) return null
-        getCached(context, chatId, sourceUrl)?.let { return it }
+        if (chatId.isBlank() || objectPath.isNullOrBlank() || contentUrl.isNullOrBlank()) {
+            return null
+        }
+        getCached(context, chatId, objectPath, updatedAt)?.let { return it }
 
         val lock = inflight.getOrPut(chatId) { Any() }
         synchronized(lock) {
             try {
-                getCached(context, chatId, sourceUrl)?.let { return it }
-                val bytes = api.fetchMediaBytes(objectPath = null, contentUrl = sourceUrl)
+                getCached(context, chatId, objectPath, updatedAt)?.let { return it }
+                val bytes = api.fetchMediaBytes(objectPath = objectPath, contentUrl = contentUrl)
                 if (bytes.isEmpty()) return null
-                return putBytes(context, chatId, bytes, sourceUrl)
+                return putBytes(context, chatId, bytes, objectPath, updatedAt)
             } catch (exc: Exception) {
                 Log.w(TAG, "Background download failed: $chatId", exc)
                 return null
@@ -81,7 +108,10 @@ object ChatBackgroundCache {
         }
     }
 
-    private data class Meta(val sourceUrl: String)
+    private data class Meta(
+        val objectPath: String,
+        val updatedAt: String?,
+    )
 
     private fun dir(context: Context) = File(context.filesDir, DIR)
 
@@ -99,15 +129,29 @@ object ChatBackgroundCache {
         if (!file.exists()) return null
         return runCatching {
             val json = JSONObject(file.readText())
-            Meta(sourceUrl = json.optString("sourceUrl"))
+            Meta(
+                objectPath = json.optString("objectPath").ifBlank {
+                    // Совместимость со старым meta.sourceUrl — считаем устаревшим.
+                    ""
+                },
+                updatedAt = json.optString("updatedAt").takeIf { it.isNotBlank() },
+            ).takeIf { it.objectPath.isNotBlank() }
         }.getOrNull()
     }
 
-    private fun writeMeta(context: Context, chatId: String, sourceUrl: String) {
+    private fun writeMeta(
+        context: Context,
+        chatId: String,
+        objectPath: String,
+        updatedAt: String,
+    ) {
         val dir = dir(context)
         if (!dir.exists()) dir.mkdirs()
         metaFile(context, chatId).writeText(
-            JSONObject().put("sourceUrl", sourceUrl).toString(),
+            JSONObject()
+                .put("objectPath", objectPath)
+                .put("updatedAt", updatedAt)
+                .toString(),
         )
     }
 }

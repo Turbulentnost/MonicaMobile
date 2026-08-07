@@ -37,16 +37,34 @@ data class ChatSummary(
     val title: String? = null,
     val photo: String? = null,
     val photoUrl: String? = null,
-    /** Персональный фон чата (presigned URL) для текущего пользователя. */
-    val backgroundUrl: String? = null,
+    /**
+     * Мобильный фон чата (отдельно от web).
+     * [backgroundMobile] — стабильный MinIO path/имя; [backgroundMobileUrl] — presigned;
+     * [backgroundMobileUpdatedAt] — ISO дата смены для инвалидации кэша.
+     */
+    val backgroundMobile: String? = null,
+    val backgroundMobileUrl: String? = null,
+    val backgroundMobileUpdatedAt: String? = null,
     val membersCount: Int = 0,
     val members: List<UserProfile> = emptyList(),
 ) {
+    /** Чат с собой / Saved Messages — как `isFavoritesChat` на вебе. */
+    fun isFavoritesChat(currentUserId: String?): Boolean {
+        if (chatType == "favorites" || chatType == "saved") return true
+        if (title?.trim() == "Избранное") return true
+        if (isGroup) return false
+        if (currentUserId.isNullOrBlank() || partner?.id.isNullOrBlank()) return false
+        return partner?.id == currentUserId
+    }
+
     val displayTitle: String
         get() = when {
             isGroup -> title?.takeIf { it.isNotBlank() } ?: "Группа"
             else -> partner?.displayName ?: "—"
         }
+
+    fun displayTitleFor(currentUserId: String?): String =
+        if (isFavoritesChat(currentUserId)) "Избранное" else displayTitle
 
     /** Для UserAvatar / AvatarCache — синтетический профиль группы (как на вебе). */
     fun avatarUser(): UserProfile? {

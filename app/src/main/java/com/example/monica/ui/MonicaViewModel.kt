@@ -781,15 +781,25 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             _chatBackgroundBusy.value = true
             try {
-                val (_, url) = withContext(Dispatchers.IO) {
+                val uploaded = withContext(Dispatchers.IO) {
                     api.uploadChatBackground(chatId, bytes, fileName, mimeType)
                 }
                 withContext(Dispatchers.IO) {
-                    ChatBackgroundCache.putBytes(getApplication(), chatId, bytes, url)
+                    ChatBackgroundCache.putBytes(
+                        getApplication(),
+                        chatId,
+                        bytes,
+                        uploaded.objectPath,
+                        uploaded.updatedAt,
+                    )
                 }
                 _chats.update { list ->
                     list.map { chat ->
-                        if (chat.id == chatId) chat.copy(backgroundUrl = url) else chat
+                        if (chat.id != chatId) chat else chat.copy(
+                            backgroundMobile = uploaded.objectPath.ifBlank { null },
+                            backgroundMobileUrl = uploaded.contentUrl,
+                            backgroundMobileUpdatedAt = uploaded.updatedAt,
+                        )
                     }
                 }
                 onDone()
@@ -812,7 +822,11 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 _chats.update { list ->
                     list.map { chat ->
-                        if (chat.id == chatId) chat.copy(backgroundUrl = null) else chat
+                        if (chat.id != chatId) chat else chat.copy(
+                            backgroundMobile = null,
+                            backgroundMobileUrl = null,
+                            backgroundMobileUpdatedAt = null,
+                        )
                     }
                 }
                 onDone()
