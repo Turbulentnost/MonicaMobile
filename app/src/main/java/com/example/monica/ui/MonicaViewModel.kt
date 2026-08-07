@@ -1729,6 +1729,12 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
                     _updateDownloadProgress.value == null
                 ) {
                     _updateBannerVisible.value = true
+                    // Прогрев DNS/TLS/CDN GitHub до клика «Обновить».
+                    if (update.apkUrl.isNotBlank()) {
+                        launch(Dispatchers.IO) {
+                            runCatching { updateInstaller.warmUp(update.apkUrl) }
+                        }
+                    }
                 }
             } catch (_: Exception) {
                 // Update checks are best-effort and should not interrupt chat startup.

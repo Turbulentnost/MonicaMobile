@@ -1,6 +1,5 @@
 package com.example.monica.ui.screens
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -31,8 +30,6 @@ import androidx.compose.material.icons.outlined.GroupAdd
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.DrawerValue
@@ -45,20 +42,20 @@ import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -79,16 +76,36 @@ import com.example.monica.ui.components.NeonInviteBorder
 import com.example.monica.ui.components.NowPlayingStripHost
 import com.example.monica.ui.components.UserAvatar
 import com.example.monica.ui.util.TimeFormat
+import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.HazeStyle
+import dev.chrisbanes.haze.HazeTint
+import dev.chrisbanes.haze.hazeEffect
+import dev.chrisbanes.haze.hazeSource
+import dev.chrisbanes.haze.rememberHazeState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-private val ChatGlassFill = Color(0x45FFFFFF)
-private val ChatGlassBorder = Color(0x66E8D5B0)
-private val ChatGlassDivider = Color(0x77E8D5B0)
+private val ChatGlassFill = Color(0x28FFFFFF)
+private val ChatGlassBorder = Color(0x55E8D5B0)
+private val ChatGlassDivider = Color(0x66E8D5B0)
 private val ChatListGlassShape = RoundedCornerShape(18.dp)
-private val ChatHeaderScrim = Color(0x88000000)
-private val ChatListBgScrim = Color(0x66040810)
-private val ChatListBgBlur = 22.dp
+private val ChatGlassStyle = HazeStyle(
+    backgroundColor = Color(0xFF121018),
+    tint = HazeTint(Color.White.copy(alpha = 0.22f)),
+    blurRadius = 26.dp,
+    noiseFactor = 0.08f,
+    fallbackTint = HazeTint(Color.Black.copy(alpha = 0.48f)),
+)
+private val ChatHeaderGlassStyle = HazeStyle(
+    backgroundColor = Color(0xFF121018),
+    tint = HazeTint(Color.Black.copy(alpha = 0.28f)),
+    blurRadius = 22.dp,
+    noiseFactor = 0.06f,
+    fallbackTint = HazeTint(Color.Black.copy(alpha = 0.55f)),
+)
+private val LocalChatListHaze = staticCompositionLocalOf<HazeState> {
+    error("Chat list HazeState missing")
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -147,167 +164,165 @@ fun ChatListScreen(
         }
     }
 
+    val hazeState = rememberHazeState()
+
     Box(modifier = Modifier.fillMaxSize()) {
         Image(
             painter = painterResource(R.drawable.chat_list_bg),
             contentDescription = null,
             modifier = Modifier
                 .fillMaxSize()
-                .blur(ChatListBgBlur),
+                .hazeSource(state = hazeState),
             contentScale = ContentScale.Crop,
         )
-        // Затемнение поверх фона — читаемость на API < 31, где blur недоступен.
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(ChatListBgScrim),
-        )
 
-        ModalNavigationDrawer(
-            drawerState = drawerState,
-            drawerContent = {
-                MonicaDrawerContent(
-                    nickname = vm.session.nickname,
-                    darkTheme = darkTheme,
-                    updateVersionName = appUpdate?.versionName,
-                    updateDownloading = updateDownloadProgress != null,
-                    onProfile = { closeDrawerAnd(onOpenProfile) },
-                    onSettings = { closeDrawerAnd(onOpenSettings) },
-                    onNotifications = { closeDrawerAnd(onOpenNotifications) },
-                    onUpdate = appUpdate?.let {
-                        {
-                            closeDrawerAnd { vm.startUpdateDownload() }
-                        }
-                    },
-                    onToggleTheme = { vm.toggleTheme() },
-                    onLogout = {
-                        scope.launch {
-                            drawerState.close()
-                            menuPlay = false
-                            vm.logout()
-                        }
-                    },
-                )
-            },
-        ) {
-            Scaffold(
-                containerColor = Color.Transparent,
-                topBar = {
-                    ChatListHeader(
-                        vm = vm,
-                        query = query,
-                        onQueryChange = { query = it },
-                        unread = unread,
-                        menuPlay = menuPlay,
-                        onMenuClick = { openDrawer() },
-                        onNotifications = onOpenNotifications,
-                        onCreateGroup = onCreateGroup,
+        CompositionLocalProvider(LocalChatListHaze provides hazeState) {
+            ModalNavigationDrawer(
+                drawerState = drawerState,
+                drawerContent = {
+                    MonicaDrawerContent(
+                        nickname = vm.session.nickname,
+                        darkTheme = darkTheme,
+                        updateVersionName = appUpdate?.versionName,
+                        updateDownloading = updateDownloadProgress != null,
+                        onProfile = { closeDrawerAnd(onOpenProfile) },
+                        onSettings = { closeDrawerAnd(onOpenSettings) },
+                        onNotifications = { closeDrawerAnd(onOpenNotifications) },
+                        onUpdate = appUpdate?.let {
+                            {
+                                closeDrawerAnd { vm.startUpdateDownload() }
+                            }
+                        },
+                        onToggleTheme = { vm.toggleTheme() },
+                        onLogout = {
+                            scope.launch {
+                                drawerState.close()
+                                menuPlay = false
+                                vm.logout()
+                            }
+                        },
                     )
                 },
-            ) { padding ->
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(padding)
-                        .padding(horizontal = 14.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    inviteBanner?.let { banner ->
-                        InviteBanner(
-                            notification = banner,
-                            onAccept = { vm.acceptInvite(banner) },
-                            onDecline = { vm.declineInvite(banner) },
-                            onDismiss = { vm.dismissInviteBanner() },
+            ) {
+                Scaffold(
+                    containerColor = Color.Transparent,
+                    topBar = {
+                        ChatListHeader(
+                            vm = vm,
+                            query = query,
+                            onQueryChange = { query = it },
+                            unread = unread,
+                            menuPlay = menuPlay,
+                            onMenuClick = { openDrawer() },
+                            onNotifications = onOpenNotifications,
+                            onCreateGroup = onCreateGroup,
                         )
-                        Spacer(Modifier.height(8.dp))
-                    }
+                    },
+                ) { padding ->
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(padding)
+                            .padding(horizontal = 14.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        inviteBanner?.let { banner ->
+                            InviteBanner(
+                                notification = banner,
+                                onAccept = { vm.acceptInvite(banner) },
+                                onDecline = { vm.declineInvite(banner) },
+                                onDismiss = { vm.dismissInviteBanner() },
+                            )
+                            Spacer(Modifier.height(8.dp))
+                        }
 
-                    if (searchResults.isNotEmpty()) {
-                        GlassPanel(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 8.dp),
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        if (searchResults.isNotEmpty()) {
+                            GlassPanel(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 8.dp),
                             ) {
-                                Text(
-                                    "Результаты",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = Color.White,
-                                    modifier = Modifier.padding(bottom = 4.dp),
-                                )
-                                searchResults.forEachIndexed { index, user ->
-                                    if (index > 0) {
-                                        HorizontalDivider(
-                                            thickness = 0.5.dp,
-                                            color = ChatGlassDivider,
-                                        )
-                                    }
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clickable {
-                                                vm.startChatWith(user.id) { chatId ->
-                                                    query = ""
-                                                    onOpenChat(chatId)
-                                                }
-                                            }
-                                            .padding(vertical = 10.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                    ) {
-                                        UserAvatar(
-                                            user = user,
-                                            size = 40.dp,
-                                            showOnline = true,
-                                            isOnline = onlineIds.contains(user.id),
-                                        )
-                                        Spacer(Modifier.width(12.dp))
-                                        Column {
-                                            Text(
-                                                user.displayName,
-                                                fontWeight = FontWeight.SemiBold,
-                                                color = Color.White,
+                                Column(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                ) {
+                                    Text(
+                                        "Результаты",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = Color.White,
+                                        modifier = Modifier.padding(bottom = 4.dp),
+                                    )
+                                    searchResults.forEachIndexed { index, user ->
+                                        if (index > 0) {
+                                            HorizontalDivider(
+                                                thickness = 0.5.dp,
+                                                color = ChatGlassDivider,
                                             )
-                                            if (user.nickname.isNotBlank()) {
+                                        }
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    vm.startChatWith(user.id) { chatId ->
+                                                        query = ""
+                                                        onOpenChat(chatId)
+                                                    }
+                                                }
+                                                .padding(vertical = 10.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            UserAvatar(
+                                                user = user,
+                                                size = 40.dp,
+                                                showOnline = true,
+                                                isOnline = onlineIds.contains(user.id),
+                                            )
+                                            Spacer(Modifier.width(12.dp))
+                                            Column {
                                                 Text(
-                                                    "@${user.nickname}",
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = Color.White.copy(alpha = 0.72f),
+                                                    user.displayName,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = Color.White,
                                                 )
+                                                if (user.nickname.isNotBlank()) {
+                                                    Text(
+                                                        "@${user.nickname}",
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = Color.White.copy(alpha = 0.72f),
+                                                    )
+                                                }
                                             }
                                         }
                                     }
                                 }
                             }
+                            Spacer(Modifier.height(12.dp))
                         }
-                        Spacer(Modifier.height(12.dp))
-                    }
 
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(top = 8.dp, bottom = 24.dp),
-                    ) {
-                        itemsIndexed(chats, key = { _, chat -> chat.id }) { index, chat ->
-                            if (index > 0) {
-                                HorizontalDivider(
-                                    modifier = Modifier.padding(vertical = 8.dp, horizontal = 6.dp),
-                                    thickness = 0.5.dp,
-                                    color = ChatGlassDivider,
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(top = 8.dp, bottom = 24.dp),
+                        ) {
+                            itemsIndexed(chats, key = { _, chat -> chat.id }) { index, chat ->
+                                if (index > 0) {
+                                    HorizontalDivider(
+                                        modifier = Modifier.padding(vertical = 8.dp, horizontal = 6.dp),
+                                        thickness = 0.5.dp,
+                                        color = ChatGlassDivider,
+                                    )
+                                }
+                                val hasInvite = incomingInvites.containsKey(chat.id)
+                                ChatRow(
+                                    chat = chat,
+                                    isOnline = !chat.isGroup && onlineIds.contains(chat.partner?.id),
+                                    hasPrivateInvite = !chat.isGroup && hasInvite,
+                                    isRinging = ringingChatId == chat.id,
+                                    isVideoRinging = ringingChatId == chat.id && callState.isVideo,
+                                    isUnread = chat.isUnreadFor(vm.session.userId) &&
+                                        ringingChatId != chat.id,
+                                    onClick = { onOpenChat(chat.id) },
+                                    onAcceptInvite = { vm.acceptInviteForChat(chat.id) },
                                 )
                             }
-                            val hasInvite = incomingInvites.containsKey(chat.id)
-                            ChatRow(
-                                chat = chat,
-                                isOnline = !chat.isGroup && onlineIds.contains(chat.partner?.id),
-                                hasPrivateInvite = !chat.isGroup && hasInvite,
-                                isRinging = ringingChatId == chat.id,
-                                isVideoRinging = ringingChatId == chat.id && callState.isVideo,
-                                isUnread = chat.isUnreadFor(vm.session.userId) &&
-                                    ringingChatId != chat.id,
-                                onClick = { onOpenChat(chat.id) },
-                                onAcceptInvite = { vm.acceptInviteForChat(chat.id) },
-                            )
                         }
                     }
                 }
@@ -321,14 +336,12 @@ private fun GlassPanel(
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit,
 ) {
-    Surface(
+    val hazeState = LocalChatListHaze.current
+    Box(
         modifier = modifier
             .clip(ChatListGlassShape)
+            .hazeEffect(state = hazeState, style = ChatGlassStyle)
             .border(1.dp, ChatGlassBorder, ChatListGlassShape),
-        color = ChatGlassFill,
-        shape = ChatListGlassShape,
-        tonalElevation = 0.dp,
-        shadowElevation = 0.dp,
     ) {
         content()
     }
@@ -347,11 +360,11 @@ private fun ChatListHeader(
     onCreateGroup: () -> Unit,
 ) {
     var createMenuOpen by remember { mutableStateOf(false) }
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = ChatHeaderScrim,
-        tonalElevation = 0.dp,
-        shadowElevation = 0.dp,
+    val hazeState = LocalChatListHaze.current
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .hazeEffect(state = hazeState, style = ChatHeaderGlassStyle),
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             Row(
@@ -593,12 +606,7 @@ private fun InviteBanner(
     onDecline: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = ChatGlassFill),
-        shape = RoundedCornerShape(12.dp),
-        border = BorderStroke(1.dp, ChatGlassBorder),
-    ) {
+    GlassPanel(modifier = Modifier.fillMaxWidth()) {
         Text(
             text = notification.title,
             modifier = Modifier.padding(start = 12.dp, top = 12.dp, end = 12.dp),
