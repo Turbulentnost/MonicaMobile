@@ -175,8 +175,15 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
     private val _appUpdate = MutableStateFlow<AppUpdateInfo?>(null)
     val appUpdate: StateFlow<AppUpdateInfo?> = _appUpdate.asStateFlow()
 
+    /** Баннер сверху; после свайпа/таймаута скрывается, но update остаётся для кнопки в меню. */
+    private val _updateBannerVisible = MutableStateFlow(false)
+    val updateBannerVisible: StateFlow<Boolean> = _updateBannerVisible.asStateFlow()
+
     private val _updateDownloadProgress = MutableStateFlow<Float?>(null)
     val updateDownloadProgress: StateFlow<Float?> = _updateDownloadProgress.asStateFlow()
+
+    /** Soft-dismiss в рамках сессии — не пишем в prefs, чтобы кнопка «Обновить» осталась в меню. */
+    private var softDismissedUpdateVersionCode: Int = 0
 
     /** chatId → уведомление входящего invite */
     val incomingInvitesByChat: StateFlow<Map<String, AppNotification>> = _notifications
@@ -1672,23 +1679,45 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
                     updateChecker.check()
                 }
                 _appUpdate.value = update
+                if (update == null) {
+                    _updateBannerVisible.value = false
+                } else if (
+                    softDismissedUpdateVersionCode != update.versionCode &&
+                    _updateDownloadProgress.value == null
+                ) {
+                    _updateBannerVisible.value = true
+                }
             } catch (_: Exception) {
                 // Update checks are best-effort and should not interrupt chat startup.
             }
         }
     }
 
+    /** Смахнули / автоскрытие — баннер уходит, кнопка в боковом меню остаётся. */
+    fun dismissUpdateBanner() {
+        val update = _appUpdate.value
+        if (update != null) {
+            softDismissedUpdateVersionCode = update.versionCode
+        }
+        _updateBannerVisible.value = false
+    }
+
     fun dismissUpdate() {
         val update = _appUpdate.value ?: return
         session.dismissedUpdateVersionCode = update.versionCode
+        softDismissedUpdateVersionCode = update.versionCode
         pendingUpdateInstallPermission = false
         _updateDownloadProgress.value = null
+        _updateBannerVisible.value = false
         _appUpdate.value = null
     }
 
     fun startUpdateDownload() {
         val update = _appUpdate.value ?: return
         if (updateDownloadJob?.isActive == true) return
+        // Баннер уезжает вверх; прогресс показываем снизу над футером.
+        _updateBannerVisible.value = false
+        softDismissedUpdateVersionCode = update.versionCode
         // Пока APK ещё не загружен в GitHub Release — открываем страницу релиза.
         if (update.apkUrl.isBlank()) {
             updateInstaller.openReleasePage(update.releaseUrl)
@@ -1712,11 +1741,24 @@ class MonicaViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 updateInstaller.startInstall(apk)
             } catch (e: Exception) {
-                _error.value = e.message ?: "Не удалось скачать обновление"
+                val cancelled = e is CancellationException ||
+                    e is java.util.concurrent.CancellationException ||
+                    e.message == "download cancelled"
+                if (!cancelled) {
+                    _error.value = e.message ?: "Не удалось скачать обновление"
+                }
             } finally {
                 _updateDownloadProgress.value = null
             }
         }
+    }
+
+    fun cancelUpdateDownload() {
+        updateInstaller.cancelDownload()
+        updateDownloadJob?.cancel()
+        updateDownloadJob = null
+        pendingUpdateInstallPermission = false
+        _updateDownloadProgress.value = null
     }
 
     private fun resolveInvite(id: String, resolved: String) {

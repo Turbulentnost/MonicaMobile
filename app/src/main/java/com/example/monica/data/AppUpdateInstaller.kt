@@ -6,10 +6,13 @@ import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import androidx.core.content.FileProvider
+import okhttp3.Call
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
+import java.io.IOException
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 class AppUpdateInstaller(
     private val context: Context,
@@ -19,6 +22,7 @@ class AppUpdateInstaller(
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(90, TimeUnit.SECONDS)
         .build()
+    private val activeCall = AtomicReference<Call?>(null)
 
     fun canRequestPackageInstalls(): Boolean {
         return Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
@@ -42,6 +46,10 @@ class AppUpdateInstaller(
         appContext.startActivity(intent)
     }
 
+    fun cancelDownload() {
+        activeCall.getAndSet(null)?.cancel()
+    }
+
     fun downloadApk(
         info: AppUpdateInfo,
         onProgress: (Float) -> Unit,
@@ -54,30 +62,47 @@ class AppUpdateInstaller(
         val target = File(updatesDir, "monica-update-${info.versionCode}.apk")
         if (target.exists()) target.delete()
 
-        client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                throw IllegalStateException("Не удалось скачать APK: HTTP ${response.code}")
-            }
-            val body = response.body ?: throw IllegalStateException("Пустой ответ при скачивании APK")
-            val total = body.contentLength().takeIf { it > 0L } ?: info.assetSize
-            var loaded = 0L
-            body.byteStream().use { input ->
-                target.outputStream().use { output ->
-                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                    while (true) {
-                        val read = input.read(buffer)
-                        if (read == -1) break
-                        output.write(buffer, 0, read)
-                        loaded += read
-                        if (total > 0L) {
-                            onProgress((loaded.toFloat() / total.toFloat()).coerceIn(0f, 1f))
+        val call = client.newCall(request)
+        activeCall.set(call)
+        try {
+            call.execute().use { response ->
+                if (!response.isSuccessful) {
+                    throw IllegalStateException("Не удалось скачать APK: HTTP ${response.code}")
+                }
+                val body = response.body ?: throw IllegalStateException("Пустой ответ при скачивании APK")
+                val total = body.contentLength().takeIf { it > 0L } ?: info.assetSize
+                var loaded = 0L
+                body.byteStream().use { input ->
+                    target.outputStream().use { output ->
+                        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                        while (true) {
+                            if (call.isCanceled()) {
+                                throw java.util.concurrent.CancellationException("download cancelled")
+                            }
+                            val read = input.read(buffer)
+                            if (read == -1) break
+                            output.write(buffer, 0, read)
+                            loaded += read
+                            if (total > 0L) {
+                                onProgress((loaded.toFloat() / total.toFloat()).coerceIn(0f, 1f))
+                            }
                         }
                     }
                 }
             }
+            onProgress(1f)
+            return target
+        } catch (e: IOException) {
+            if (call.isCanceled()) {
+                throw java.util.concurrent.CancellationException("download cancelled")
+            }
+            throw e
+        } finally {
+            activeCall.compareAndSet(call, null)
+            if (call.isCanceled() && target.exists()) {
+                target.delete()
+            }
         }
-        onProgress(1f)
-        return target
     }
 
     fun startInstall(apk: File) {

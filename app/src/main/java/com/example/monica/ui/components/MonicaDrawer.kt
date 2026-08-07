@@ -19,6 +19,7 @@ import androidx.compose.material.icons.outlined.LightMode
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.SystemUpdate
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -37,9 +38,12 @@ import androidx.compose.ui.unit.dp
 fun MonicaDrawerContent(
     nickname: String?,
     darkTheme: Boolean,
+    updateVersionName: String? = null,
+    updateDownloading: Boolean = false,
     onProfile: () -> Unit,
     onSettings: () -> Unit,
     onNotifications: () -> Unit,
+    onUpdate: (() -> Unit)? = null,
     onToggleTheme: () -> Unit,
     onLogout: () -> Unit,
 ) {
@@ -87,6 +91,25 @@ fun MonicaDrawerContent(
                 onClick = onNotifications,
                 modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
             )
+            if (!updateVersionName.isNullOrBlank() && onUpdate != null) {
+                NavigationDrawerItem(
+                    icon = { Icon(Icons.Outlined.SystemUpdate, contentDescription = null) },
+                    label = {
+                        Text(
+                            if (updateDownloading) {
+                                "Скачивание…"
+                            } else {
+                                "Обновить до $updateVersionName"
+                            },
+                        )
+                    },
+                    selected = false,
+                    onClick = {
+                        if (!updateDownloading) onUpdate()
+                    },
+                    modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
+                )
+            }
             NavigationDrawerItem(
                 icon = { Icon(Icons.AutoMirrored.Outlined.Logout, contentDescription = null) },
                 label = { Text("Выйти") },

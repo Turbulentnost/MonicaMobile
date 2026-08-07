@@ -103,6 +103,8 @@ fun ChatListScreen(
     val inviteBanner by vm.inviteBanner.collectAsStateWithLifecycle()
     val incomingInvites by vm.incomingInvitesByChat.collectAsStateWithLifecycle()
     val callState by vm.callState.collectAsStateWithLifecycle()
+    val appUpdate by vm.appUpdate.collectAsStateWithLifecycle()
+    val updateDownloadProgress by vm.updateDownloadProgress.collectAsStateWithLifecycle()
     val ringingChatId = callState.ringingChatId
 
     var query by remember { mutableStateOf("") }
@@ -154,9 +156,16 @@ fun ChatListScreen(
                 MonicaDrawerContent(
                     nickname = vm.session.nickname,
                     darkTheme = darkTheme,
+                    updateVersionName = appUpdate?.versionName,
+                    updateDownloading = updateDownloadProgress != null,
                     onProfile = { closeDrawerAnd(onOpenProfile) },
                     onSettings = { closeDrawerAnd(onOpenSettings) },
                     onNotifications = { closeDrawerAnd(onOpenNotifications) },
+                    onUpdate = appUpdate?.let {
+                        {
+                            closeDrawerAnd { vm.startUpdateDownload() }
+                        }
+                    },
                     onToggleTheme = { vm.toggleTheme() },
                     onLogout = {
                         scope.launch {
